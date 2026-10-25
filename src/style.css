@@ -34,6 +34,7 @@ html, body {
 #boot {
   position: fixed; inset: 0; display: grid; place-items: center; background: #0a1316;
   font-family: var(--display); letter-spacing: 0.3em; color: var(--gold); z-index: 100;
+  overflow-y: auto; user-select: text;
 }
 
 /* ------------------------------------------------------------------ HUD */
@@ -303,3 +304,9 @@ html, body {
   }
 }
 @keyframes fade-hint { 80% { opacity: 1; } 100% { opacity: 0; } }
+
+.fatal { max-width: 620px; padding: 24px; font: 14px/1.6 var(--ui); letter-spacing: 0; color: var(--text); }
+.fatal h1 { font: 700 22px var(--display); letter-spacing: 0.15em; color: var(--gold-hot); margin: 0 0 12px; }
+.fatal code { background: #1c1a17; padding: 1px 5px; border-radius: 3px; color: var(--gold-hot); user-select: text; -webkit-user-select: text; }
+.fatal li { margin-bottom: 8px; }
+.fatal button { font: 700 14px var(--display); padding: 10px 22px; margin-top: 8px; color: var(--gold-hot); background: #1d1a16; border: 1px solid var(--gold); border-radius: 3px; cursor: pointer; }
