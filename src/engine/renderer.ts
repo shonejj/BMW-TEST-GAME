@@ -45,7 +45,12 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
+  /** Milliseconds spent in the last render() call (CPU submit time). */
+  lastRenderMs = 0;
+
   render() {
+    const t = performance.now();
     this.renderer.render(this.scene, this.camera);
+    this.lastRenderMs = performance.now() - t;
   }
 }

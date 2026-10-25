@@ -50,6 +50,9 @@ export abstract class Enemy {
   protected st = 0;
   protected deadTime = 0;
   protected flash = 0;
+  /** Squash & stretch on hit (game-feel): 1 right after a hit, eases back to 0. */
+  protected squash = 0;
+  protected baseScale = 1;
   protected knock = new THREE.Vector2();
   protected spawnT = 0;
   protected dotTick = 0;
@@ -84,7 +87,7 @@ export abstract class Enemy {
     this.elite = true;
     this.maxHp = this.hp = Math.round(this.maxHp * 2.5);
     this.dmg *= 1.3;
-    this.root.scale.multiplyScalar(1.2);
+    this.baseScale = 1.2;
     this.radius *= 1.2;
     this.barFill.material = barEliteMat;
     const ring = this.game.vfx.aura(this.radius * 1.6, COLORS.red);
@@ -99,6 +102,7 @@ export abstract class Enemy {
   /** Visual + physical reaction to a hit (damage itself is applied by Game). */
   onHit(dir: { x: number; z: number }, knock: number) {
     this.flash = 0.12;
+    this.squash = 1;
     const resist = this.isBoss ? 0.05 : this.kind === 'armored' ? 0.35 : 1;
     this.knock.x += dir.x * knock * 6 * resist;
     this.knock.y += dir.z * knock * 6 * resist;
@@ -157,6 +161,9 @@ export abstract class Enemy {
     const f = this.flash > 0 ? 1 : 0;
     for (const m of this.flashMats) m.emissive.setRGB(f, f * 0.9, f * 0.8).add(m.userData.baseEmissive ?? new THREE.Color(0));
     this.root.rotation.y = this.yaw;
+    this.squash = Math.max(0, this.squash - dt * 7);
+    const sq = this.squash * this.squash * (this.isBoss ? 0.3 : 1);
+    this.root.scale.set(this.baseScale * (1 + 0.16 * sq), this.baseScale * (1 - 0.24 * sq), this.baseScale * (1 + 0.16 * sq));
     this.shadow.position.set(this.pos.x, this.pos.y - this.hover() + 0.03, this.pos.z);
 
     this.bar.position.set(this.pos.x, this.pos.y + this.barHeight(), this.pos.z);
@@ -372,7 +379,7 @@ export class Spider extends Enemy {
       const ph = this.walkPhase + leg.index * Math.PI * 0.5 + (leg.side > 0 ? Math.PI : 0);
       const base = leg.side * (Math.PI / 2) + (leg.index - 1.5) * 0.45 * leg.side;
       leg.hip.rotation.y = base + Math.sin(ph) * 0.35 * amp * leg.side;
-      leg.knee.rotation.x = -1.3 - Math.max(0, Math.cos(ph)) * 0.5 * amp;
+      leg.hip.rotation.x = -Math.max(0, Math.cos(ph)) * 0.35 * amp; // lift the swinging leg
     }
     let rear = 0;
     if (this.state === 'windup' || this.state === 'leapwind') rear = this.kind === 'armored' ? -0.35 : -0.5;
@@ -391,7 +398,7 @@ export class Spider extends Enemy {
   protected animateDeath(dt: number) {
     const r = this.rig;
     r.body.rotation.z += (Math.PI - r.body.rotation.z) * damp(8, dt);
-    for (const leg of r.legs) leg.knee.rotation.x += (-0.2 - leg.knee.rotation.x) * damp(6, dt);
+    for (const leg of r.legs) leg.hip.rotation.x += (-0.9 - leg.hip.rotation.x) * damp(6, dt); // legs curl up
     if (this.deadTime > 1.2) this.root.position.y -= dt * 0.8;
     this.shadow.visible = this.deadTime < 1;
   }

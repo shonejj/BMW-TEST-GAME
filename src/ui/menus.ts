@@ -112,6 +112,10 @@ export class Menus {
             </select></label>
           <label>Sound <input type="range" min="0" max="1" step="0.05" value="${g.settings.volume}" data-s="volume"></label>
           <label>Music <input type="range" min="0" max="1" step="0.05" value="${g.settings.music}" data-s="music"></label>
+          <label>Screen shake
+            <select data-s="shake">
+              ${[[1, 'Full'], [0.5, 'Reduced'], [0, 'Off']].map(([v, n]) => `<option value="${v}" ${g.settings.screenShake === v ? 'selected' : ''}>${n}</option>`).join('')}
+            </select></label>
           <label class="check"><input type="checkbox" data-s="numbers" ${g.settings.damageNumbers ? 'checked' : ''}> Damage numbers</label>
         </div>
         <div class="menu-buttons">
@@ -127,6 +131,7 @@ export class Menus {
     s.querySelector<HTMLSelectElement>('[data-s=quality]')!.addEventListener('change', (e) => g.applySettings({ quality: (e.target as HTMLSelectElement).value as 'low' }));
     s.querySelector<HTMLInputElement>('[data-s=volume]')!.addEventListener('input', (e) => g.applySettings({ volume: +(e.target as HTMLInputElement).value }));
     s.querySelector<HTMLInputElement>('[data-s=music]')!.addEventListener('input', (e) => g.applySettings({ music: +(e.target as HTMLInputElement).value }));
+    s.querySelector<HTMLSelectElement>('[data-s=shake]')!.addEventListener('change', (e) => g.applySettings({ screenShake: +(e.target as HTMLSelectElement).value }));
     s.querySelector<HTMLInputElement>('[data-s=numbers]')!.addEventListener('change', (e) => g.applySettings({ damageNumbers: (e.target as HTMLInputElement).checked }));
   }
 

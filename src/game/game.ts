@@ -96,6 +96,7 @@ export class Game {
   inventory: Inventory = { gold: 0, bag: [], equipped: {} };
 
   time = 0;
+  readonly perf = { logicMs: 0, renderMs: 0, calls: 0 };
   private state: GameState = 'boot';
   private enemies: Enemy[] = [];
   private boss: Boss | null = null;
@@ -154,14 +155,20 @@ export class Game {
     this.player = new Player(this);
     this.miniMap = this.level.renderMinimap();
     this.audio.setVolume(this.settings.volume);
+    this.camRig.shakeScale = this.settings.screenShake;
     this.audio.setMusicVolume(this.settings.music);
     this.updateParticleScale();
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
     this.camRig.snap(this.player.pos);
     this.toMainMenu();
-    requestAnimationFrame(() => this.loop());
+    this.renderer.renderer.setAnimationLoop(() => this.loop());
     document.getElementById('boot')?.remove();
+    this.renderer.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      if (this.state === 'playing') this.pause();
+      this.hud.toast('Graphics were reset by the browser. Reload if the screen stays black.', '#ff9a6a');
+    });
   }
 
   private updateParticleScale() {
@@ -248,6 +255,7 @@ export class Game {
       this.rain.setVisibleCount(p.quality === 'low' ? 450 : p.quality === 'medium' ? 900 : 1400);
       this.updateParticleScale();
     }
+    if (p.screenShake !== undefined) this.camRig.shakeScale = p.screenShake;
     if (p.volume !== undefined) this.audio.setVolume(p.volume);
     if (p.music !== undefined) this.audio.setMusicVolume(p.music);
     writeSettings(this.settings);
@@ -740,11 +748,16 @@ export class Game {
   // -------------------------------------------------------------------------
 
   private loop() {
-    requestAnimationFrame(() => this.loop());
     const now = performance.now();
     const rawDt = Math.min(0.05, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
     this.frame(rawDt);
+    // Rolling CPU timings (ms): game logic vs render submit. Read via window.game.perf.
+    const total = performance.now() - now;
+    const k = 0.05;
+    this.perf.logicMs += (total - this.renderer.lastRenderMs - this.perf.logicMs) * k;
+    this.perf.renderMs += (this.renderer.lastRenderMs - this.perf.renderMs) * k;
+    this.perf.calls = this.renderer.renderer.info.render.calls;
   }
 
   private frame(rawDt: number) {
@@ -799,7 +812,11 @@ export class Game {
       this.level.update(dt, this.time);
     }
     this.rain.update(rawDt, this.camRig.target);
-    this.camRig.update(rawDt, this.player.pos);
+    // Look-ahead: lead the camera towards where the player is moving / facing.
+    const pl = this.player;
+    const lead = !pl.alive ? 0 : pl.speedNow > 1 ? 1.8 : 0.8;
+    this.camRig.setLead(Math.sin(pl.yaw) * lead, Math.cos(pl.yaw) * lead);
+    this.camRig.update(rawDt, pl.pos);
     this.renderer.render();
 
     // UI

@@ -20,6 +20,8 @@ export interface Settings {
   volume: number;
   music: number;
   damageNumbers: boolean;
+  /** 1 = full, 0.5 = reduced, 0 = off (accessibility). */
+  screenShake: number;
 }
 
 const SAVE_KEY = 'monkey-king-save-v1';
@@ -48,6 +50,6 @@ export const loadSave = () => {
 export const writeSave = (s: SaveData) => write(SAVE_KEY, s);
 
 export function loadSettings(defaultQuality: Quality): Settings {
-  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
+  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
 }
 export const writeSettings = (s: Settings) => write(SETTINGS_KEY, s);
