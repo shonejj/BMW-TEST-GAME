@@ -186,3 +186,25 @@ All shipped assets are original (made by us or generated procedurally) or **CC0*
 2. Hosting: GitHub Pages (simplest for PWA install) OK?
 3. Art direction: stylised low-poly (fast, light on mobile) or as close to realistic as the browser allows (heavier)?
 4. Scope: one polished chapter first, then more chapters and bosses?
+
+---
+
+## 9. Status
+
+**v1 is implemented.** It covers M0–M5 and M7 for Chapter 1, with a first art pass (M6) using stylised
+procedural low-poly art. Decisions taken:
+
+- English UI
+- GitHub Pages hosting
+- Stylised low-poly art, which runs well on both PC and mobile
+- Chapter 1 first
+
+See the README for the feature list.
+
+Next candidates:
+
+- Hand-made rigged models and keyframed animations
+- A merchant/shrine to spend gold
+- More legendary powers
+- Chapter 2
+- Optional bloom on High quality
