@@ -16,6 +16,6 @@
     <div id="app"></div>
     <div id="boot">LOADING…</div>
     <div class="rotate-hint">Rotate your device to landscape for the best experience</div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/main.ts" onerror="document.getElementById('boot').innerHTML='This page is serving the unbuilt source code.<br><br>On GitHub: Settings &rarr; Pages &rarr; Source: <b>GitHub Actions</b>, then re-run the deploy workflow.'"></script>
   </body>
 </html>
