@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { approachAngle, clamp, damp, lerp, rand, wrapAngle, yawOf } from '../engine/util';
 import { buildBoss, buildSpider, type BossRig, type SpiderKind, type SpiderRig } from './models';
-import { COLORS, makeBlob } from './vfx';
+import { COLORS } from './vfx';
 import type { Game } from './game';
 
 export type EnemyKind = SpiderKind | 'boss';
@@ -24,10 +24,81 @@ export const KINDS: Record<EnemyKind, KindDef> = {
   boss: { name: 'Blackfeather Lord', hp: 3600, speed: 3.4, radius: 1.6, dmg: 30, xp: 600, gold: [300, 500], dropChance: 1 },
 };
 
-const barGeo = new THREE.PlaneGeometry(1, 0.09);
-const barBgMat = new THREE.MeshBasicMaterial({ color: 0x1a0505, depthTest: false, transparent: true, opacity: 0.8 });
-const barFillMat = new THREE.MeshBasicMaterial({ color: 0xd8282a, depthTest: false });
-const barEliteMat = new THREE.MeshBasicMaterial({ color: 0xff8a20, depthTest: false });
+/**
+ * Blob shadows and health bars for every enemy, drawn as three instanced
+ * meshes (3 draw calls total instead of 3 per enemy).
+ */
+export class EnemyOverlays {
+  private readonly shadows: THREE.InstancedMesh;
+  private readonly barBg: THREE.InstancedMesh;
+  private readonly barFill: THREE.InstancedMesh;
+  private readonly m = new THREE.Matrix4();
+  private readonly q = new THREE.Quaternion();
+  private readonly v = new THREE.Vector3();
+  private readonly sc = new THREE.Vector3();
+  private readonly off = new THREE.Vector3();
+  private readonly normal = new THREE.Color(0xd8282a);
+  private readonly elite = new THREE.Color(0xff8a20);
+
+  constructor(scene: THREE.Scene, private readonly max = 96) {
+    const blob = new THREE.ShaderMaterial({
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv * 2.0 - 1.0; vec4 p = vec4(position, 1.0);
+        #ifdef USE_INSTANCING
+        p = instanceMatrix * p;
+        #endif
+        gl_Position = projectionMatrix * modelViewMatrix * p; }`,
+      fragmentShader: `varying vec2 vUv; void main() { float r = length(vUv); gl_FragColor = vec4(0.0, 0.0, 0.0, pow(max(0.0, 1.0 - r), 2.0) * 0.55); }`,
+      transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2,
+    });
+    this.shadows = new THREE.InstancedMesh(new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), blob, max);
+    const bar = new THREE.PlaneGeometry(1, 0.09);
+    this.barBg = new THREE.InstancedMesh(bar, new THREE.MeshBasicMaterial({ color: 0x1a0505, depthTest: false, transparent: true, opacity: 0.8 }), max);
+    this.barFill = new THREE.InstancedMesh(bar, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }), max);
+    this.barFill.setColorAt(0, this.normal);
+    for (const im of [this.shadows, this.barBg, this.barFill]) {
+      im.frustumCulled = false;
+      im.count = 0;
+      scene.add(im);
+    }
+    this.shadows.renderOrder = 1;
+    this.barBg.renderOrder = 20;
+    this.barFill.renderOrder = 21;
+  }
+
+  update(enemies: readonly Enemy[], camera: THREE.Camera) {
+    let ns = 0, nb = 0;
+    this.q.copy(camera.quaternion);
+    for (const e of enemies) {
+      if (ns >= this.max) break;
+      if (e.shadowVisible) {
+        const r = e.radius * 1.5;
+        this.m.makeScale(r, 1, r).setPosition(e.pos.x, e.pos.y - e.hover() + 0.03, e.pos.z);
+        this.shadows.setMatrixAt(ns++, this.m);
+      }
+      if (e.barVisible || (e.elite && e.alive)) {
+        const s = e.elite ? 1.6 : e.radius * 1.4 + 0.3;
+        this.v.set(e.pos.x, e.pos.y + e.barHeight(), e.pos.z);
+        this.sc.set(s, s, s);
+        this.m.compose(this.v, this.q, this.sc);
+        this.barBg.setMatrixAt(nb, this.m);
+        const f = Math.max(0.001, e.hp / e.maxHp);
+        this.off.set(-(1 - f) / 2 * s, 0, 0.001).applyQuaternion(this.q);
+        this.v.add(this.off);
+        this.sc.set(s * f, s, s);
+        this.m.compose(this.v, this.q, this.sc);
+        this.barFill.setMatrixAt(nb, this.m);
+        this.barFill.setColorAt(nb, e.elite ? this.elite : this.normal);
+        nb++;
+      }
+    }
+    this.shadows.count = ns;
+    this.barBg.count = this.barFill.count = nb;
+    this.shadows.instanceMatrix.needsUpdate = true;
+    this.barBg.instanceMatrix.needsUpdate = true;
+    this.barFill.instanceMatrix.needsUpdate = true;
+    if (this.barFill.instanceColor) this.barFill.instanceColor.needsUpdate = true;
+  }
+}
 
 export abstract class Enemy {
   readonly root = new THREE.Group();
@@ -56,9 +127,8 @@ export abstract class Enemy {
   protected knock = new THREE.Vector2();
   protected spawnT = 0;
   protected dotTick = 0;
-  protected readonly shadow: THREE.Mesh;
-  protected readonly bar = new THREE.Group();
-  protected readonly barFill: THREE.Mesh;
+  shadowVisible = true;
+  barVisible = false;
   protected flashMats: THREE.MeshLambertMaterial[] = [];
 
   constructor(protected readonly game: Game, readonly kind: EnemyKind, level: number, at: THREE.Vector3) {
@@ -71,16 +141,7 @@ export abstract class Enemy {
     this.pos = this.root.position;
     this.pos.copy(at);
     this.yaw = yawOf(game.player.pos.x - at.x, game.player.pos.z - at.z);
-    this.shadow = makeBlob(0x000000, 0.55, this.radius * 1.5, false);
-    game.renderer.scene.add(this.root, this.shadow);
-
-    const bg = new THREE.Mesh(barGeo, barBgMat);
-    this.barFill = new THREE.Mesh(barGeo, barFillMat);
-    this.barFill.position.z = 0.001;
-    bg.renderOrder = this.barFill.renderOrder = 20;
-    this.bar.add(bg, this.barFill);
-    this.bar.visible = false;
-    game.renderer.scene.add(this.bar);
+    game.renderer.scene.add(this.root);
   }
 
   makeElite() {
@@ -89,7 +150,6 @@ export abstract class Enemy {
     this.dmg *= 1.3;
     this.baseScale = 1.2;
     this.radius *= 1.2;
-    this.barFill.material = barEliteMat;
     const ring = this.game.vfx.aura(this.radius * 1.6, COLORS.red);
     this.eliteRing = ring;
   }
@@ -106,13 +166,13 @@ export abstract class Enemy {
     const resist = this.isBoss ? 0.05 : this.kind === 'armored' ? 0.35 : 1;
     this.knock.x += dir.x * knock * 6 * resist;
     this.knock.y += dir.z * knock * 6 * resist;
-    this.bar.visible = true;
+    this.barVisible = true;
   }
 
   kill() {
     this.alive = false;
     this.deadTime = 0;
-    this.bar.visible = false;
+    this.barVisible = false;
     this.eliteRing?.stop();
     this.onDeath();
   }
@@ -120,7 +180,7 @@ export abstract class Enemy {
 
   dispose() {
     this.removed = true;
-    this.game.renderer.scene.remove(this.root, this.shadow, this.bar);
+    this.game.renderer.scene.remove(this.root);
     this.eliteRing?.stop();
   }
 
@@ -164,19 +224,11 @@ export abstract class Enemy {
     this.squash = Math.max(0, this.squash - dt * 7);
     const sq = this.squash * this.squash * (this.isBoss ? 0.3 : 1);
     this.root.scale.set(this.baseScale * (1 + 0.16 * sq), this.baseScale * (1 - 0.24 * sq), this.baseScale * (1 + 0.16 * sq));
-    this.shadow.position.set(this.pos.x, this.pos.y - this.hover() + 0.03, this.pos.z);
-
-    this.bar.position.set(this.pos.x, this.pos.y + this.barHeight(), this.pos.z);
-    this.bar.quaternion.copy(this.game.renderer.camera.quaternion);
-    this.barFill.scale.x = Math.max(0.001, this.hp / this.maxHp);
-    this.barFill.position.x = -(1 - this.barFill.scale.x) / 2;
-    this.bar.scale.setScalar(this.elite ? 1.6 : this.radius * 1.4 + 0.3);
-    if (this.elite) this.bar.visible = true;
     if (this.eliteRing) this.eliteRing.mesh.position.set(this.pos.x, this.pos.y + 0.06, this.pos.z);
   }
 
-  protected hover() { return 0; }
-  protected barHeight() { return 1.6; }
+  hover() { return 0; }
+  barHeight() { return 1.6; }
   protected abstract think(dt: number): void;
   protected abstract animateDeath(dt: number): void;
 
@@ -192,7 +244,8 @@ export abstract class Enemy {
     // Clone materials so each enemy can flash independently.
     const map = new Map<THREE.Material, THREE.MeshLambertMaterial>();
     for (const m of mats) {
-      const c = m.clone();
+      // Materials built per instance (e.g. spiders with shader-animated legs) are used as-is.
+      const c = m.userData.unique ? m : m.clone();
       c.userData.baseEmissive = m.emissive.clone().multiplyScalar(m.emissiveIntensity);
       c.emissiveIntensity = 1;
       map.set(m, c);
@@ -234,7 +287,7 @@ export class Spider extends Enemy {
     game.vfx.dustBurst(at, 8, this.radius);
   }
 
-  protected barHeight() {
+  barHeight() {
     return this.kind === 'weaver' ? 2.1 : this.kind === 'armored' ? 2.2 : 1.0;
   }
 
@@ -375,12 +428,8 @@ export class Spider extends Enemy {
     const r = this.rig;
     this.walkPhase += dt * (2 + this.moveSpeed * 3.2);
     const amp = clamp(this.moveSpeed / this.def.speed, 0, 1);
-    for (const leg of r.legs) {
-      const ph = this.walkPhase + leg.index * Math.PI * 0.5 + (leg.side > 0 ? Math.PI : 0);
-      const base = leg.side * (Math.PI / 2) + (leg.index - 1.5) * 0.45 * leg.side;
-      leg.hip.rotation.y = base + Math.sin(ph) * 0.35 * amp * leg.side;
-      leg.hip.rotation.x = -Math.max(0, Math.cos(ph)) * 0.35 * amp; // lift the swinging leg
-    }
+    r.legs.uPhase.value = this.walkPhase;
+    r.legs.uAmp.value = amp;
     let rear = 0;
     if (this.state === 'windup' || this.state === 'leapwind') rear = this.kind === 'armored' ? -0.35 : -0.5;
     if (this.state === 'attack') rear = 0.3;
@@ -398,9 +447,9 @@ export class Spider extends Enemy {
   protected animateDeath(dt: number) {
     const r = this.rig;
     r.body.rotation.z += (Math.PI - r.body.rotation.z) * damp(8, dt);
-    for (const leg of r.legs) leg.hip.rotation.x += (-0.9 - leg.hip.rotation.x) * damp(6, dt); // legs curl up
+    r.legs.uCurl.value += (1 - r.legs.uCurl.value) * damp(6, dt); // legs curl up
     if (this.deadTime > 1.2) this.root.position.y -= dt * 0.8;
-    this.shadow.visible = this.deadTime < 1;
+    this.shadowVisible = this.deadTime < 1;
   }
 }
 
@@ -436,13 +485,13 @@ export class Boss extends Enemy {
     return this.hp < this.maxHp * 0.5;
   }
 
-  protected barHeight() {
+  barHeight() {
     return 5.5;
   }
 
   onHit(dir: { x: number; z: number }, knock: number) {
     super.onHit(dir, knock);
-    this.bar.visible = false; // boss uses the big HUD bar
+    this.barVisible = false; // boss uses the big HUD bar
   }
 
   private setState(s: BossState) {

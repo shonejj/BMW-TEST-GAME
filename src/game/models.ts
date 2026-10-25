@@ -152,7 +152,8 @@ export type SpiderKind = 'spiderling' | 'armored' | 'weaver';
 export interface SpiderRig {
   root: THREE.Group;
   body: THREE.Group;
-  legs: { hip: THREE.Group; side: number; index: number }[];
+  /** Leg animation runs in the vertex shader; drive it through these uniforms. */
+  legs: { uPhase: { value: number }; uAmp: { value: number }; uCurl: { value: number } };
   torso?: THREE.Group;
   armL?: THREE.Group;
   armR?: THREE.Group;
@@ -163,7 +164,6 @@ export interface SpiderRig {
 interface SpiderGeometry {
   body: THREE.BufferGeometry;
   glow: THREE.BufferGeometry;
-  leg: THREE.BufferGeometry;
   torso?: THREE.BufferGeometry;
   arm?: THREE.BufferGeometry;
 }
@@ -173,12 +173,22 @@ function part(geo: THREE.BufferGeometry, color: number, x = 0, y = 0, z = 0) {
   return colored(geo.translate(x, y, z), color, 0.04);
 }
 
+/** Adds the per-vertex leg attributes (0 = not a leg) used by the leg vertex shader. */
+function legAttrs(geo: THREE.BufferGeometry, leg: number, pivot: THREE.Vector3) {
+  const n = geo.getAttribute('position').count;
+  geo.setAttribute('aLeg', new THREE.BufferAttribute(new Float32Array(n).fill(leg), 1));
+  const pv = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) pv.set([pivot.x, pivot.y, pivot.z], i * 3);
+  geo.setAttribute('aPivot', new THREE.BufferAttribute(pv, 3));
+  return geo;
+}
+
 const spiderGeoCache = new Map<SpiderKind, SpiderGeometry>();
 
 /**
- * Each spider kind's static parts are merged into one vertex-coloured mesh
- * (plus one emissive "glow" mesh and one mesh per leg), so a spider costs
- * ~10 draw calls instead of ~30. Geometry is shared between all instances.
+ * Each spider kind is one merged, vertex-coloured mesh with all 8 legs baked
+ * in (animated on the GPU) plus one emissive "glow" mesh: 2 draw calls per
+ * spider instead of ~30. Geometry is shared between all instances.
  */
 function spiderGeometry(kind: SpiderKind): SpiderGeometry {
   const cached = spiderGeoCache.get(kind);
@@ -186,6 +196,7 @@ function spiderGeometry(kind: SpiderKind): SpiderGeometry {
   const shellC = kind === 'armored' ? 0x4a4c52 : 0x2a2626;
   const legC = kind === 'armored' ? 0x3b3c40 : 0x221e1e;
   const bone = 0xcfc6b4;
+  const zero = new THREE.Vector3();
 
   const body = [
     part(new THREE.SphereGeometry(0.5, 8, 6).scale(1, 0.75, 1.2), shellC, 0, 0.1, -0.55),
@@ -204,16 +215,25 @@ function spiderGeometry(kind: SpiderKind): SpiderGeometry {
     glow.push(part(new THREE.SphereGeometry(0.035, 4, 3), 0xffffff, -0.07, 0.1, 0.6));
     glow.push(part(new THREE.SphereGeometry(0.035, 4, 3), 0xffffff, 0.07, 0.1, 0.6));
   }
+  for (const g of body) legAttrs(g, 0, zero);
 
-  // One bent leg (upper rises outward, lower reaches down/out) in hip space, along +Z.
+  // One bent leg (upper rises outward, lower reaches down/out) along +Z, then placed per hip.
   const upperM = new THREE.Matrix4().makeRotationX(0.9);
   const lowerM = new THREE.Matrix4().makeRotationX(0.9).multiply(new THREE.Matrix4().makeTranslation(0, 0.7, 0)).multiply(new THREE.Matrix4().makeRotationX(-1.3));
-  const leg = mergeGeometries([
+  const legBase = mergeGeometries([
     colored(new THREE.CylinderGeometry(0.05, 0.06, 0.7, 4).translate(0, 0.35, 0).applyMatrix4(upperM), legC, 0.04),
     colored(new THREE.CylinderGeometry(0.05, 0.015, 0.9, 4).translate(0, -0.45, 0).applyMatrix4(lowerM), legC, 0.04),
   ])!;
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 4; i++) {
+      const pivot = new THREE.Vector3(side * 0.2, 0, 0.3 - i * 0.18);
+      const m = new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z)
+        .multiply(new THREE.Matrix4().makeRotationY(side * (Math.PI / 2) + (i - 1.5) * 0.45 * side));
+      body.push(legAttrs(legBase.clone().applyMatrix4(m), 1 + i + (side > 0 ? 4 : 0), pivot));
+    }
+  }
 
-  const g: SpiderGeometry = { body: mergeGeometries(body)!, glow: mergeGeometries(glow)!, leg };
+  const g: SpiderGeometry = { body: mergeGeometries(body)!, glow: mergeGeometries(glow)! };
   if (kind === 'weaver') {
     const skin = 0xd8d0c8;
     g.torso = mergeGeometries([
@@ -226,43 +246,68 @@ function spiderGeometry(kind: SpiderKind): SpiderGeometry {
     g.arm = colored(new THREE.CapsuleGeometry(0.05, 0.45, 2, 4).translate(0, -0.3, 0), skin, 0.04);
   }
   for (const geo of Object.values(g)) geo?.computeBoundingSphere();
+  // Legs swing outside the static bounds; pad so frustum culling doesn't clip them.
+  g.body.boundingSphere!.radius *= 1.3;
   spiderGeoCache.set(kind, g);
   return g;
 }
 
+const LEG_VERTEX = /* glsl */ `
+#include <begin_vertex>
+if (aLeg > 0.5) {
+  float li = aLeg - 1.0;
+  float side = li >= 4.0 ? 1.0 : -1.0;
+  float ph = uPhase + mod(li, 4.0) * 1.5708 + (side > 0.0 ? 3.14159 : 0.0);
+  vec3 d = transformed - aPivot;
+  float sw = sin(ph) * 0.35 * uAmp * side;
+  float c = cos(sw), s = sin(sw);
+  d = vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+  float r = length(d.xz);
+  d.y += max(0.0, cos(ph)) * 0.45 * uAmp * r;
+  d = mix(d, vec3(d.x * 0.35, abs(d.y) + r * 0.7, d.z * 0.35), uCurl);
+  transformed = aPivot + d;
+}`;
+
+function spiderMaterial() {
+  const legs = { uPhase: { value: 0 }, uAmp: { value: 0 }, uCurl: { value: 0 } };
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, legs);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aLeg;\nattribute vec3 aPivot;\nuniform float uPhase;\nuniform float uAmp;\nuniform float uCurl;')
+      .replace('#include <begin_vertex>', LEG_VERTEX);
+  };
+  mat.customProgramCacheKey = () => 'spider-legs';
+  mat.userData.unique = true;
+  return { mat, legs };
+}
+
 export function buildSpider(kind: SpiderKind): SpiderRig {
   const geo = spiderGeometry(kind);
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  const { mat, legs } = spiderMaterial();
+  const plain = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  plain.userData.unique = true;
   const glowMat = lambert(0x550808, 0xff1a1a, kind === 'armored' ? 1.2 : 0.8);
   glowMat.vertexColors = true;
+  glowMat.userData.unique = true;
 
   const root = new THREE.Group();
   const body = joint(root, 0, 0.42, 0);
   body.add(new THREE.Mesh(geo.body, mat), new THREE.Mesh(geo.glow, glowMat));
 
-  const legs: SpiderRig['legs'] = [];
-  for (const side of [-1, 1]) {
-    for (let i = 0; i < 4; i++) {
-      const hip = joint(body, side * 0.2, 0, 0.3 - i * 0.18);
-      hip.rotation.y = side * (Math.PI / 2) + (i - 1.5) * 0.45 * side;
-      hip.add(new THREE.Mesh(geo.leg, mat));
-      legs.push({ hip, side, index: i });
-    }
-  }
-
   let torso: THREE.Group | undefined, armL: THREE.Group | undefined, armR: THREE.Group | undefined;
   if (geo.torso && geo.arm) {
     torso = joint(body, 0, 0.2, 0.3);
-    torso.add(new THREE.Mesh(geo.torso, mat));
+    torso.add(new THREE.Mesh(geo.torso, plain));
     armL = joint(torso, -0.22, 0.6, 0);
     armR = joint(torso, 0.22, 0.6, 0);
-    armL.add(new THREE.Mesh(geo.arm, mat));
-    armR.add(new THREE.Mesh(geo.arm, mat));
+    armL.add(new THREE.Mesh(geo.arm, plain));
+    armR.add(new THREE.Mesh(geo.arm, plain));
   }
 
   const scale = kind === 'spiderling' ? 0.55 : kind === 'armored' ? 1.35 : 0.85;
   root.scale.setScalar(scale);
-  return { root, body, legs, torso, armL, armR, flashMats: [mat, glowMat], glowMat };
+  return { root, body, legs, torso, armL, armR, flashMats: [mat, plain, glowMat], glowMat };
 }
 
 // ---------------------------------------------------------------------------

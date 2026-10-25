@@ -22,6 +22,10 @@ export interface Settings {
   damageNumbers: boolean;
   /** 1 = full, 0.5 = reduced, 0 = off (accessibility). */
   screenShake: number;
+  /** Frame cap: 30 (battery saver), 60, or 0 (match display). */
+  fpsCap: number;
+  /** Lower resolution automatically when the device can't keep up. */
+  dynamicRes: boolean;
 }
 
 const SAVE_KEY = 'monkey-king-save-v1';
@@ -50,6 +54,6 @@ export const loadSave = () => {
 export const writeSave = (s: SaveData) => write(SAVE_KEY, s);
 
 export function loadSettings(defaultQuality: Quality): Settings {
-  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
+  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: 60, dynamicRes: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
 }
 export const writeSettings = (s: Settings) => write(SETTINGS_KEY, s);

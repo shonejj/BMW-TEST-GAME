@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PORTRAIT } from './icons';
+import { scaleX, setStyle, setText } from './dom';
 
 interface Floater {
   el: HTMLDivElement;
@@ -107,12 +108,12 @@ export class Hud {
   }
 
   setStats(hp: number, maxHp: number, mp: number, maxMp: number, xp: number, xpNext: number, level: number, gold: number) {
-    this.hpFill.style.transform = `scaleX(${Math.max(0, hp / maxHp)})`;
-    this.hpText.textContent = `${Math.ceil(hp)} / ${Math.round(maxHp)}`;
-    this.mpFill.style.transform = `scaleX(${Math.max(0, mp / maxMp)})`;
-    this.xpFill.style.transform = `scaleX(${Math.min(1, xp / xpNext)})`;
-    this.lvl.textContent = String(level);
-    this.gold.textContent = gold.toLocaleString() + 'g';
+    setStyle(this.hpFill, 'transform', scaleX(hp / maxHp));
+    setText(this.hpText, `${Math.ceil(hp)} / ${Math.round(maxHp)}`);
+    setStyle(this.mpFill, 'transform', scaleX(mp / maxMp));
+    setStyle(this.xpFill, 'transform', scaleX(xp / xpNext));
+    setText(this.lvl, String(level));
+    setText(this.gold, gold.toLocaleString() + 'g');
   }
 
   setLocation(name: string) {
@@ -127,8 +128,8 @@ export class Hud {
   setBoss(name: string | null, frac = 1) {
     this.bossBox.classList.toggle('hidden', !name);
     if (name) {
-      this.bossName.textContent = name;
-      this.bossFill.style.transform = `scaleX(${Math.max(0, frac)})`;
+      setText(this.bossName, name);
+      setStyle(this.bossFill, 'transform', scaleX(frac));
     }
   }
 

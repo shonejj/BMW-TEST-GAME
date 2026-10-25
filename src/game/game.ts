@@ -10,7 +10,7 @@ import { Menus } from '../ui/menus';
 import { Debris } from '../world/debris';
 import { Level, type Breakable, type SpawnKind } from '../world/level';
 import { Rain } from '../world/weather';
-import { Boss, Enemy, Spider } from './enemies';
+import { Boss, Enemy, EnemyOverlays, Spider } from './enemies';
 import {
   BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
   type Inventory, type Item, type Slot,
@@ -90,6 +90,7 @@ export class Game {
   vfx!: Vfx;
   debris!: Debris;
   rain!: Rain;
+  private overlays!: EnemyOverlays;
   player!: Player;
   readonly touch = isTouchDevice();
   settings: Settings;
@@ -153,6 +154,7 @@ export class Game {
     this.rain.setVisibleCount(q === 'low' ? 450 : q === 'medium' ? 900 : 1400);
     this.renderer.scene.add(this.rain.lines);
     this.player = new Player(this);
+    this.overlays = new EnemyOverlays(this.renderer.scene);
     this.miniMap = this.level.renderMinimap();
     this.audio.setVolume(this.settings.volume);
     this.camRig.shakeScale = this.settings.screenShake;
@@ -161,6 +163,7 @@ export class Game {
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
     this.camRig.snap(this.player.pos);
+    this.prewarmShaders();
     this.toMainMenu();
     this.renderer.renderer.setAnimationLoop(() => this.loop());
     document.getElementById('boot')?.remove();
@@ -169,6 +172,19 @@ export class Game {
       if (this.state === 'playing') this.pause();
       this.hud.toast('Graphics were reset by the browser. Reload if the screen stays black.', '#ff9a6a');
     });
+  }
+
+  /** Compile every shader the game uses at load time so nothing compiles mid-fight. */
+  private prewarmShaders() {
+    const hidden = new THREE.Vector3(0, -60, 0);
+    for (const k of ['gale', 'fire', 'web', 'feather'] as const) this.projectile(k, hidden, 0, 0, 0, 0, 'enemy', 0);
+    const dummies = (['spiderling', 'armored', 'weaver', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    this.vfx.prewarm(this.renderer.renderer, this.renderer.camera);
+    for (const d of dummies) d.dispose();
+    this.enemies = [];
+    this.boss = null;
+    for (const p of this.projectiles) this.releaseProjectile(p);
+    this.projectiles = [];
   }
 
   private updateParticleScale() {
@@ -256,6 +272,7 @@ export class Game {
       this.updateParticleScale();
     }
     if (p.screenShake !== undefined) this.camRig.shakeScale = p.screenShake;
+    if (p.dynamicRes === false) { this.renderer.dynamicScale = 1; this.renderer.applyPixelRatio(); this.updateParticleScale(); }
     if (p.volume !== undefined) this.audio.setVolume(p.volume);
     if (p.music !== undefined) this.audio.setMusicVolume(p.music);
     writeSettings(this.settings);
@@ -266,7 +283,7 @@ export class Game {
     for (const e of this.enemies) e.dispose();
     this.enemies = [];
     this.boss = null;
-    for (const p of this.projectiles) this.renderer.scene.remove(p.obj);
+    for (const p of this.projectiles) this.releaseProjectile(p);
     this.projectiles = [];
     this.hazards = [];
     for (const d of this.drops) this.removeDrop(d);
@@ -297,7 +314,7 @@ export class Game {
     for (const e of this.enemies) e.dispose();
     this.enemies = [];
     this.boss = null;
-    for (const p of this.projectiles) this.renderer.scene.remove(p.obj);
+    for (const p of this.projectiles) this.releaseProjectile(p);
     this.projectiles = [];
     this.hazards = [];
     this.hud.setBoss(null);
@@ -523,10 +540,25 @@ export class Game {
     this.audio.play('skitter');
   }
 
+  private projectilePool = new Map<Projectile['kind'], { obj: THREE.Object3D; mat: THREE.MeshBasicMaterial }[]>();
+
+  private releaseProjectile(pr: Projectile) {
+    pr.obj.visible = false;
+    if (!this.projectilePool.has(pr.kind)) this.projectilePool.set(pr.kind, []);
+    this.projectilePool.get(pr.kind)!.push({ obj: pr.obj, mat: pr.mat });
+  }
+
   private projectile(kind: Projectile['kind'], pos: THREE.Vector3, yaw: number, speed: number, life: number, radius: number, owner: Projectile['owner'], dmg: number, crit = false) {
     let obj: THREE.Object3D;
     let mat: THREE.MeshBasicMaterial;
-    if (kind === 'gale' || kind === 'fire') {
+    const pooled = this.projectilePool.get(kind)?.pop();
+    if (pooled) {
+      obj = pooled.obj;
+      mat = pooled.mat;
+      obj.visible = true;
+      obj.scale.set(1, 1, 1);
+      mat.opacity = kind === 'web' ? 0.9 : 0.85;
+    } else if (kind === 'gale' || kind === 'fire') {
       mat = new THREE.MeshBasicMaterial({ color: kind === 'gale' ? COLORS.jade : COLORS.fire, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
       const mesh = new THREE.Mesh(waveGeo, mat);
       mesh.rotation.x = -Math.PI / 2;
@@ -542,9 +574,9 @@ export class Game {
       obj = new THREE.Mesh(featherGeo, mat);
     }
     obj.position.set(pos.x, pos.y + 1.1, pos.z);
-    obj.rotation.y = yaw;
+    obj.rotation.set(0, yaw, 0);
     obj.renderOrder = 6;
-    this.renderer.scene.add(obj);
+    if (!obj.parent) this.renderer.scene.add(obj);
     this.projectiles.push({
       obj, mat, vel: new THREE.Vector3(Math.sin(yaw) * speed, 0, Math.cos(yaw) * speed), life, maxLife: life, radius, owner, dmg, crit, kind, hit: new Set(),
     });
@@ -749,8 +781,14 @@ export class Game {
 
   private loop() {
     const now = performance.now();
+    // Frame cap: on 90/120 Hz phones an uncapped loop renders twice as often for no benefit.
+    // Menus run at 30 fps.
+    const cap = this.state === 'playing' || this.state === 'dead' ? this.settings.fpsCap : 30;
+    if (cap > 0 && now - this.lastFrame < 1000 / cap - 2) return;
     const rawDt = Math.min(0.05, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
+    // Resize (if needed) before drawing, so the browser never shows a cleared canvas.
+    this.adaptResolution(now, cap);
     this.frame(rawDt);
     // Rolling CPU timings (ms): game logic vs render submit. Read via window.game.perf.
     const total = performance.now() - now;
@@ -758,6 +796,44 @@ export class Game {
     this.perf.logicMs += (total - this.renderer.lastRenderMs - this.perf.logicMs) * k;
     this.perf.renderMs += (this.renderer.lastRenderMs - this.perf.renderMs) * k;
     this.perf.calls = this.renderer.renderer.info.render.calls;
+  }
+
+  private resWindow = { t0: 0, frames: 0, slow: 0, fast: 0 };
+
+  /** Dynamic resolution: drop render scale if frames keep missing the target, raise it with headroom. */
+  private adaptResolution(now: number, cap: number) {
+    const w = this.resWindow;
+    if (!this.settings.dynamicRes || this.state !== 'playing') {
+      w.t0 = now;
+      w.frames = 0;
+      return;
+    }
+    w.frames++;
+    if (now - w.t0 < 1500) return;
+    const fps = (w.frames * 1000) / (now - w.t0);
+    const target = cap > 0 ? cap : 60;
+    w.t0 = now;
+    w.frames = 0;
+    const r = this.renderer;
+    if (fps < target * 0.8) {
+      w.slow++;
+      w.fast = 0;
+      if (w.slow >= 2 && r.dynamicScale > 0.55) {
+        r.dynamicScale = Math.max(0.55, r.dynamicScale * 0.85);
+        r.applyPixelRatio();
+        this.updateParticleScale();
+        w.slow = 0;
+      }
+    } else if (fps > target * 0.95) {
+      w.fast++;
+      w.slow = 0;
+      if (w.fast >= 4 && r.dynamicScale < 1) {
+        r.dynamicScale = Math.min(1, r.dynamicScale * 1.1);
+        r.applyPixelRatio();
+        this.updateParticleScale();
+        w.fast = 0;
+      }
+    }
   }
 
   private frame(rawDt: number) {
@@ -817,6 +893,7 @@ export class Game {
     const lead = !pl.alive ? 0 : pl.speedNow > 1 ? 1.8 : 0.8;
     this.camRig.setLead(Math.sin(pl.yaw) * lead, Math.cos(pl.yaw) * lead);
     this.camRig.update(rawDt, pl.pos);
+    this.overlays.update(this.enemies, this.renderer.camera);
     this.renderer.render();
 
     // UI
@@ -990,8 +1067,7 @@ export class Game {
       }
       if (!this.level.isWalkable(px, pz, 0) && pr.owner === 'enemy' && pr.life < pr.maxLife - 0.15) dead = true;
       if (dead) {
-        this.renderer.scene.remove(pr.obj);
-        pr.mat.dispose();
+        this.releaseProjectile(pr);
         this.projectiles.splice(i, 1);
       }
     }

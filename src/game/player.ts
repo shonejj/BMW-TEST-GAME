@@ -91,8 +91,9 @@ export class Player {
     this.root = this.rig.root;
     this.pos = this.root.position;
     this.light = new THREE.PointLight(0xffb070, 30, 16, 1.6);
-    this.light.position.set(0, 3.2, 1);
-    this.root.add(this.light);
+    // The light lives in the scene (not under the model) and is never hidden: changing the
+    // number of visible lights forces three.js to recompile every lit material.
+    game.renderer.scene.add(this.light);
     this.shadow = makeBlob(0x000000, 0.6, 0.9, false);
     game.renderer.scene.add(this.shadow);
     game.renderer.scene.add(this.root);
@@ -711,6 +712,7 @@ export class Player {
     const flash = this.hurtFlash > 0 ? 0.6 : 0;
     if (!this.transformed) r.mats.fur.emissive.setRGB(flash, 0, 0);
     // Blink while invulnerable after respawn
-    this.root.visible = !(this.invuln > 0.5 && this.state === 'free' && Math.floor(t * 12) % 2 === 0);
+    r.body.visible = !(this.invuln > 0.5 && this.state === 'free' && Math.floor(t * 12) % 2 === 0);
+    this.light.position.set(this.pos.x, this.pos.y + 3.2, this.pos.z + 1);
   }
 }

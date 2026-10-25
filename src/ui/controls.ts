@@ -1,5 +1,6 @@
 import type { Action, Input } from '../engine/input';
 import { ICONS } from './icons';
+import { setClass, setStyle, setText } from './dom';
 
 interface SkillButton {
   el: HTMLDivElement;
@@ -167,15 +168,15 @@ export class Controls {
     for (let i = 0; i < 4; i++) {
       const b = this.skills[i];
       const frac = maxCds[i] > 0 ? cooldowns[i] / maxCds[i] : 0;
-      b.cd.style.setProperty('--p', String(frac));
-      b.cd.style.display = frac > 0 ? 'block' : 'none';
-      b.cdText.textContent = cooldowns[i] > 0 ? Math.ceil(cooldowns[i]).toString() : '';
-      b.el.classList.toggle('nomana', mana < costs[i]);
+      setStyle(b.cd, '--p', frac.toFixed(3));
+      setStyle(b.cd, 'display', frac > 0 ? 'block' : 'none');
+      setText(b.cdText, cooldowns[i] > 0 ? Math.ceil(cooldowns[i]).toString() : '');
+      setClass(b.el, 'nomana', mana < costs[i]);
     }
     const transformed = transformLeft > 0;
     const f = transformed ? transformLeft / transformMax : fury / 100;
-    this.furyRing.style.strokeDasharray = `${f * 100} 100`;
-    this.transformBtn.el.classList.toggle('ready', fury >= 100 && !transformed);
-    this.transformBtn.el.classList.toggle('active', transformed);
+    setStyle(this.furyRing, 'stroke-dasharray', `${(f * 100).toFixed(1)} 100`);
+    setClass(this.transformBtn.el, 'ready', fury >= 100 && !transformed);
+    setClass(this.transformBtn.el, 'active', transformed);
   }
 }

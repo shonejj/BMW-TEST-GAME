@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clamp, noise2, seeded } from '../engine/util';
 import { makeBlob } from '../game/vfx';
 import {
@@ -219,6 +220,7 @@ export class Level {
     this.buildFoliage(density);
     this.buildBreakables();
     this.buildGates();
+    this.bakeStatic();
     this.scene.add(this.group);
   }
 
@@ -442,6 +444,7 @@ export class Level {
     const y = this.heightAt(x, z);
     def.mesh.position.set(x, y, z);
     def.mesh.rotation.y = this.rng() * 6;
+    def.mesh.userData.dynamic = true;
     this.group.add(def.mesh);
     this.breakables.push({ def, pos: new THREE.Vector3(x, y, z), hp: def.hp, broken: false });
   }
@@ -468,8 +471,57 @@ export class Level {
     for (const d of defs) {
       const { mesh, mat } = sealBarrier(d.x1 - d.x0);
       mesh.position.set((d.x0 + d.x1) / 2, this.heightAt(0, d.z), d.z);
+      mesh.userData.dynamic = true;
       this.group.add(mesh);
       this.gates.push({ ...d, active: true, mesh, mat, fade: 1 });
+    }
+  }
+
+  /**
+   * Merges every static, non-instanced mesh (pillars, roofs, statues, lanterns…)
+   * that shares a material into one mesh per 30 m chunk. Turns ~100 small draw
+   * calls into a handful while keeping frustum culling per chunk.
+   */
+  private bakeStatic() {
+    this.group.updateMatrixWorld(true);
+    const buckets = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[]; order: number }>();
+    const remove: THREE.Object3D[] = [];
+    const p = new THREE.Vector3();
+    const isDynamic = (o: THREE.Object3D) => {
+      for (let c: THREE.Object3D | null = o; c; c = c.parent) if (c.userData.dynamic) return true;
+      return false;
+    };
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || (m as unknown as THREE.InstancedMesh).isInstancedMesh || isDynamic(m)) return;
+      const mat = m.material as THREE.Material;
+      if (Array.isArray(mat) || (mat as THREE.ShaderMaterial).isShaderMaterial || mat.transparent) return;
+      m.getWorldPosition(p);
+      const key = mat.uuid + ':' + Math.floor(p.z / 30);
+      let b = buckets.get(key);
+      if (!b) buckets.set(key, (b = { mat, geos: [], order: m.renderOrder }));
+      const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv', 'color'].includes(name)) g.deleteAttribute(name);
+      b.geos.push(g.applyMatrix4(m.matrixWorld));
+      remove.push(m);
+    });
+    for (const m of remove) m.parent?.remove(m);
+    for (const b of buckets.values()) {
+      // Geometries in one bucket must share attribute sets; group by signature.
+      const bySig = new Map<string, THREE.BufferGeometry[]>();
+      for (const g of b.geos) {
+        const sig = Object.keys(g.attributes).sort().join(',');
+        if (!bySig.has(sig)) bySig.set(sig, []);
+        bySig.get(sig)!.push(g);
+      }
+      for (const list of bySig.values()) {
+        const merged = mergeGeometries(list, false);
+        if (!merged) continue;
+        merged.computeBoundingSphere();
+        const mesh = new THREE.Mesh(merged, b.mat);
+        mesh.renderOrder = b.order;
+        this.group.add(mesh);
+      }
     }
   }
 

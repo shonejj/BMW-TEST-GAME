@@ -305,10 +305,24 @@ export const COLORS = {
   white: 0xffffff,
 };
 
+type PoolKind = 'slash' | 'ring' | 'tele' | 'beam';
+interface Pooled {
+  obj: THREE.Object3D;
+  mesh: THREE.Mesh;
+  mat: THREE.ShaderMaterial;
+  flip?: THREE.Group;
+}
+
+/**
+ * All effect meshes are pooled and their materials are never disposed. Disposing
+ * a ShaderMaterial makes three.js release its compiled program, so the next
+ * effect of that type recompiles the shader — a 100–600 ms freeze on phones.
+ */
 export class Vfx {
   readonly sparks: Particles;
   readonly dust: Particles;
-  private effects: Effect[] = [];
+  private effects: (Effect & { item: Pooled; kind: PoolKind })[] = [];
+  private pools: Record<PoolKind, Pooled[]> = { slash: [], ring: [], tele: [], beam: [] };
   private time = 0;
   private slashGeo = new Map<string, THREE.BufferGeometry>();
   private beamGeo = new THREE.CylinderGeometry(0.35, 0.35, 1, 12, 1, true).translate(0, 0.5, 0);
@@ -319,10 +333,83 @@ export class Vfx {
     scene.add(this.sparks.points, this.dust.points);
   }
 
-  private add(e: Effect) {
-    this.scene.add(e.obj);
+  private create(kind: PoolKind): Pooled {
+    switch (kind) {
+      case 'slash': {
+        const mat = new THREE.ShaderMaterial({
+          vertexShader: SLASH_VERT, fragmentShader: SLASH_FRAG,
+          uniforms: {
+            uProgress: { value: 0 }, uFade: { value: 1 }, uArc: { value: 1 }, uInner: { value: 0.45 },
+            uColorA: { value: new THREE.Color() }, uColorB: { value: new THREE.Color() },
+          },
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(this.getSlashGeo(Math.PI, 0.45), mat);
+        mesh.rotation.x = -Math.PI / 2;
+        const flip = new THREE.Group();
+        flip.add(mesh);
+        const holder = new THREE.Group();
+        holder.rotation.order = 'YXZ';
+        holder.add(flip);
+        holder.renderOrder = 6;
+        mesh.renderOrder = 6;
+        return { obj: holder, mesh, mat, flip };
+      }
+      case 'ring': {
+        const mat = makeGroundMaterial(RING_FRAG, {
+          uTime: { value: 0 }, uRadius: { value: 0.5 }, uWidth: { value: 0.1 }, uFill: { value: 0.6 },
+          uAlpha: { value: 1 }, uColor: { value: new THREE.Color() },
+        });
+        const mesh = new THREE.Mesh(groundPlane, mat);
+        mesh.renderOrder = 2;
+        return { obj: mesh, mesh, mat };
+      }
+      case 'tele': {
+        const mat = makeGroundMaterial(TELE_FRAG, {
+          uProgress: { value: 0 }, uAlpha: { value: 0.9 }, uHalfAngle: { value: Math.PI }, uColor: { value: new THREE.Color() },
+        }, false);
+        const mesh = new THREE.Mesh(groundPlane, mat);
+        mesh.renderOrder = 2;
+        return { obj: mesh, mesh, mat };
+      }
+      case 'beam': {
+        const mat = new THREE.ShaderMaterial({
+          vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG,
+          uniforms: { uColor: { value: new THREE.Color() }, uAlpha: { value: 1 }, uTime: { value: 0 } },
+          transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(this.beamGeo, mat);
+        mesh.renderOrder = 7;
+        return { obj: mesh, mesh, mat };
+      }
+    }
+  }
+
+  private take(kind: PoolKind): Pooled {
+    const item = this.pools[kind].pop() ?? this.create(kind);
+    item.obj.visible = true;
+    item.obj.rotation.set(0, 0, 0);
+    item.obj.scale.set(1, 1, 1);
+    if (!item.obj.parent) this.scene.add(item.obj);
+    return item;
+  }
+
+  private add(kind: PoolKind, item: Pooled, dur: number, update: Effect['update']) {
+    const e = { obj: item.obj, t: 0, dur, update, item, kind };
     this.effects.push(e);
     return e;
+  }
+
+  /** Compiles every effect shader up front (call once after the scene is built). */
+  prewarm(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
+    const items = (['slash', 'ring', 'tele', 'beam'] as PoolKind[]).flatMap((k) => [this.take(k), this.take(k)]);
+    const kinds = (['slash', 'ring', 'tele', 'beam'] as PoolKind[]).flatMap((k) => [k, k]);
+    for (const it of items) it.obj.position.set(0, -50, 0);
+    renderer.compile(this.scene, camera);
+    items.forEach((it, i) => {
+      it.obj.visible = false;
+      this.pools[kinds[i]].push(it);
+    });
   }
 
   private getSlashGeo(arc: number, inner: number) {
@@ -341,158 +428,119 @@ export class Vfx {
    */
   slash(pos: THREE.Vector3, yaw: number, opts: { radius?: number; arc?: number; dur?: number; tilt?: number; reverse?: boolean; colorA?: number; colorB?: number; height?: number } = {}) {
     const arc = opts.arc ?? Math.PI * 0.95;
-    const inner = 0.45;
-    const mat = new THREE.ShaderMaterial({
-      vertexShader: SLASH_VERT,
-      fragmentShader: SLASH_FRAG,
-      uniforms: {
-        uProgress: { value: 0 }, uFade: { value: 1 }, uArc: { value: arc }, uInner: { value: inner },
-        uColorA: { value: new THREE.Color(opts.colorA ?? COLORS.gold) },
-        uColorB: { value: new THREE.Color(opts.colorB ?? COLORS.goldHot) },
-      },
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-    });
-    const mesh = new THREE.Mesh(this.getSlashGeo(arc, inner), mat);
-    const holder = new THREE.Group();
-    holder.position.copy(pos);
-    holder.position.y += opts.height ?? 1.0;
-    holder.rotation.order = 'YXZ';
-    holder.rotation.y = yaw;
-    holder.rotation.z = opts.tilt ?? 0;
+    const it = this.take('slash');
+    const u = it.mat.uniforms;
+    u.uArc.value = arc;
+    u.uProgress.value = 0;
+    u.uFade.value = 1;
+    (u.uColorA.value as THREE.Color).set(opts.colorA ?? COLORS.gold);
+    (u.uColorB.value as THREE.Color).set(opts.colorB ?? COLORS.goldHot);
+    it.mesh.geometry = this.getSlashGeo(arc, 0.45);
     // Ring lies in XY; lay it flat and rotate so the arc is centred on +Z (facing).
     // It sweeps from -X to +X; mirroring reverses the sweep direction.
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.rotation.z = -Math.PI / 2 - arc / 2;
-    mesh.scale.setScalar(opts.radius ?? 3);
-    const flip = new THREE.Group();
-    if (opts.reverse) flip.scale.x = -1;
-    flip.add(mesh);
-    holder.add(flip);
-    holder.renderOrder = 6;
-    const dur = opts.dur ?? 0.28;
-    this.add({
-      obj: holder, t: 0, dur,
-      update: (k) => {
-        mat.uniforms.uProgress.value = Math.min(1.4, k * 2.6);
-        mat.uniforms.uFade.value = k < 0.5 ? 1 : 1 - (k - 0.5) * 2;
-        const s = 1 + k * 0.15;
-        holder.scale.set(s, s, s);
-      },
+    it.mesh.rotation.set(-Math.PI / 2, 0, -Math.PI / 2 - arc / 2);
+    it.mesh.scale.setScalar(opts.radius ?? 3);
+    it.flip!.scale.x = opts.reverse ? -1 : 1;
+    const holder = it.obj;
+    holder.position.copy(pos);
+    holder.position.y += opts.height ?? 1.0;
+    holder.rotation.y = yaw;
+    holder.rotation.z = opts.tilt ?? 0;
+    this.add('slash', it, opts.dur ?? 0.28, (k) => {
+      u.uProgress.value = Math.min(1.4, k * 2.6);
+      u.uFade.value = k < 0.5 ? 1 : 1 - (k - 0.5) * 2;
+      const s = 1 + k * 0.15;
+      holder.scale.set(s, s, s);
     });
+  }
+
+  private ring(pos: THREE.Vector3 | null, radius: number, color: number, radiusU: number, width: number, fill: number, alpha: number, yOff = 0.06) {
+    const it = this.take('ring');
+    const u = it.mat.uniforms;
+    u.uRadius.value = radiusU;
+    u.uWidth.value = width;
+    u.uFill.value = fill;
+    u.uAlpha.value = alpha;
+    (u.uColor.value as THREE.Color).set(color);
+    if (pos) it.obj.position.set(pos.x, pos.y + yOff, pos.z);
+    it.obj.scale.setScalar(radius);
+    return it;
   }
 
   /** Expanding ground shockwave. */
   shockwave(pos: THREE.Vector3, radius: number, color = COLORS.gold, dur = 0.45, width = 0.12) {
-    const mat = makeGroundMaterial(RING_FRAG, {
-      uTime: { value: 0 }, uRadius: { value: 0.1 }, uWidth: { value: width }, uFill: { value: 0.6 },
-      uAlpha: { value: 1 }, uColor: { value: new THREE.Color(color) },
-    });
-    const m = new THREE.Mesh(groundPlane, mat);
-    m.position.set(pos.x, pos.y + 0.06, pos.z);
-    m.scale.setScalar(radius);
-    m.renderOrder = 2;
-    this.add({
-      obj: m, t: 0, dur,
-      update: (k) => {
-        mat.uniforms.uRadius.value = 0.15 + 0.83 * (1 - (1 - k) * (1 - k));
-        mat.uniforms.uAlpha.value = 1 - k * k;
-        mat.uniforms.uTime.value = this.time;
-      },
+    const it = this.ring(pos, radius, color, 0.1, width, 0.6, 1);
+    const u = it.mat.uniforms;
+    this.add('ring', it, dur, (k) => {
+      u.uRadius.value = 0.15 + 0.83 * (1 - (1 - k) * (1 - k));
+      u.uAlpha.value = 1 - k * k;
+      u.uTime.value = this.time;
     });
   }
 
-  /** A persistent golden aura ring that follows a target until `stop()` is called. */
+  /** A persistent aura ring that follows a target until `stop()` is called. */
   aura(radius: number, color = COLORS.gold) {
-    const mat = makeGroundMaterial(RING_FRAG, {
-      uTime: { value: 0 }, uRadius: { value: 0.96 }, uWidth: { value: 0.08 }, uFill: { value: 0.55 },
-      uAlpha: { value: 0 }, uColor: { value: new THREE.Color(color) },
-    });
-    const m = new THREE.Mesh(groundPlane, mat);
-    m.scale.setScalar(radius);
-    m.renderOrder = 2;
+    const it = this.ring(null, radius, color, 0.96, 0.08, 0.55, 0);
+    const u = it.mat.uniforms;
     let stopping = false;
     let alpha = 0;
-    const e = this.add({
-      obj: m, t: 0, dur: 999, keep: true,
-      update: (_k, dt) => {
-        alpha += (stopping ? -4 : 6) * dt;
-        alpha = Math.max(0, Math.min(1, alpha));
-        mat.uniforms.uAlpha.value = alpha;
-        mat.uniforms.uTime.value = this.time;
-        m.rotation.y += dt * 4;
-        if (stopping && alpha <= 0) e.t = e.dur;
-      },
+    const e = this.add('ring', it, 1e9, (_k, dt) => {
+      alpha = Math.max(0, Math.min(1, alpha + (stopping ? -4 : 6) * dt));
+      u.uAlpha.value = alpha;
+      u.uTime.value = this.time;
+      it.obj.rotation.y += dt * 4;
+      if (stopping && alpha <= 0) e.t = e.dur;
     });
-    return {
-      mesh: m,
-      stop: () => { stopping = true; },
-    };
+    return { mesh: it.mesh, stop: () => { stopping = true; } };
   }
 
-  /** Red telegraph decal: a filling circle or sector. Returns a handle you can move/remove. */
+  /** Red telegraph decal: a filling circle or sector. */
   telegraph(pos: THREE.Vector3, radius: number, dur: number, opts: { yaw?: number; halfAngle?: number; color?: number } = {}) {
-    const mat = makeGroundMaterial(TELE_FRAG, {
-      uProgress: { value: 0 }, uAlpha: { value: 0.9 }, uHalfAngle: { value: opts.halfAngle ?? Math.PI },
-      uColor: { value: new THREE.Color(opts.color ?? COLORS.red) },
-    }, false);
-    const m = new THREE.Mesh(groundPlane, mat);
-    m.position.set(pos.x, pos.y + 0.05, pos.z);
-    m.scale.setScalar(radius);
+    const it = this.take('tele');
+    const u = it.mat.uniforms;
+    u.uProgress.value = 0;
+    u.uAlpha.value = 0.9;
+    u.uHalfAngle.value = opts.halfAngle ?? Math.PI;
+    (u.uColor.value as THREE.Color).set(opts.color ?? COLORS.red);
+    it.obj.position.set(pos.x, pos.y + 0.05, pos.z);
+    it.obj.scale.setScalar(radius);
     // The sector shader points along -Z in mesh space; facing yaw is measured from +Z.
-    m.rotation.y = (opts.yaw ?? 0) + Math.PI;
-    m.renderOrder = 2;
-    const e = this.add({
-      obj: m, t: 0, dur,
-      update: (k) => {
-        mat.uniforms.uProgress.value = Math.min(1, k * 1.05);
-        mat.uniforms.uAlpha.value = k > 0.92 ? (1 - k) * 10 : 0.9;
-      },
+    it.obj.rotation.y = (opts.yaw ?? 0) + Math.PI;
+    const e = this.add('tele', it, dur, (k) => {
+      u.uProgress.value = Math.min(1, k * 1.05);
+      u.uAlpha.value = k > 0.92 ? (1 - k) * 10 : 0.9;
     });
-    return { mesh: m, cancel: () => { e.t = e.dur; } };
+    return { mesh: it.mesh, cancel: () => { e.t = e.dur; } };
   }
 
   /** Vertical light pillar (loot beams, level up). */
   beam(pos: THREE.Vector3, color: number, height: number, dur: number, width = 1) {
-    const mat = new THREE.ShaderMaterial({
-      vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG,
-      uniforms: { uColor: { value: new THREE.Color(color) }, uAlpha: { value: 1 }, uTime: { value: 0 } },
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    const it = this.take('beam');
+    const u = it.mat.uniforms;
+    (u.uColor.value as THREE.Color).set(color);
+    u.uAlpha.value = 0;
+    it.obj.position.copy(pos);
+    it.obj.scale.set(width, height, width);
+    const e = this.add('beam', it, dur, (k) => {
+      u.uTime.value = this.time;
+      u.uAlpha.value = dur > 100 ? 0.8 : Math.min(1, (1 - k) * 3) * Math.min(1, k * 10);
     });
-    const m = new THREE.Mesh(this.beamGeo, mat);
-    m.position.copy(pos);
-    m.scale.set(width, height, width);
-    m.renderOrder = 7;
-    const e = this.add({
-      obj: m, t: 0, dur,
-      update: (k) => {
-        mat.uniforms.uTime.value = this.time;
-        mat.uniforms.uAlpha.value = dur > 100 ? 0.8 : Math.min(1, (1 - k) * 3) * Math.min(1, k * 10);
-      },
-    });
-    return { mesh: m, remove: () => { e.t = e.dur; } };
+    return { mesh: it.mesh, remove: () => { e.t = e.dur; } };
   }
 
   /** Lingering poison pool. */
   pool(pos: THREE.Vector3, radius: number, dur: number, color = COLORS.jade) {
-    const mat = makeGroundMaterial(RING_FRAG, {
-      uTime: { value: 0 }, uRadius: { value: 0.95 }, uWidth: { value: 0.25 }, uFill: { value: 2.2 },
-      uAlpha: { value: 0 }, uColor: { value: new THREE.Color(color) },
-    });
-    const m = new THREE.Mesh(groundPlane, mat);
-    m.position.set(pos.x, pos.y + 0.07, pos.z);
-    m.scale.setScalar(radius);
-    m.renderOrder = 2;
-    this.add({
-      obj: m, t: 0, dur,
-      update: (k) => {
-        mat.uniforms.uTime.value = this.time * 0.3;
-        mat.uniforms.uAlpha.value = Math.min(1, k * 8, (1 - k) * 4) * 0.8;
-        if (Math.random() < 0.3) this.sparks.emit(m.position.x, m.position.y, m.position.z, { count: 1, radius: radius * 0.9, speed: [0, 0.3], up: [0.5, 1.5], gravity: -0.5, life: [0.6, 1.2], color, color2: COLORS.jadeHot, size: [0.2, 0.5] });
-      },
+    const it = this.ring(pos, radius, color, 0.95, 0.25, 2.2, 0, 0.07);
+    const u = it.mat.uniforms;
+    const p = it.obj.position;
+    this.add('ring', it, dur, (k) => {
+      u.uTime.value = this.time * 0.3;
+      u.uAlpha.value = Math.min(1, k * 8, (1 - k) * 4) * 0.8;
+      if (Math.random() < 0.3) this.sparks.emit(p.x, p.y, p.z, { count: 1, radius: radius * 0.9, speed: [0, 0.3], up: [0.5, 1.5], gravity: -0.5, life: [0.6, 1.2], color, color2: COLORS.jadeHot, size: [0.2, 0.5] });
     });
   }
 
-  /** Hit sparks + optional dust at a point. */
+  /** Hit sparks at a point. */
   impact(pos: THREE.Vector3, color = COLORS.goldHot, count = 10) {
     this.sparks.emit(pos.x, pos.y + 1, pos.z, { count, speed: [3, 9], up: [1, 5], life: [0.15, 0.4], size: [0.1, 0.25], color, color2: COLORS.gold, gravity: 10, drag: 3 });
   }
@@ -506,15 +554,12 @@ export class Vfx {
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const e = this.effects[i];
       e.t += dt;
-      const k = Math.min(1, e.t / e.dur);
-      e.update(k, dt);
+      e.update(Math.min(1, e.t / e.dur), dt);
       if (e.t >= e.dur) {
-        this.scene.remove(e.obj);
-        e.obj.traverse((o) => {
-          const m = (o as THREE.Mesh).material as THREE.Material | undefined;
-          if (m) m.dispose();
-        });
-        this.effects.splice(i, 1);
+        e.item.obj.visible = false;
+        this.pools[e.kind].push(e.item);
+        this.effects[i] = this.effects[this.effects.length - 1];
+        this.effects.pop();
       }
     }
     this.sparks.update(dt);

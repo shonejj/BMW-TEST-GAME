@@ -13,6 +13,8 @@ export class Renderer {
     const touch = isTouchDevice();
     this.renderer = new THREE.WebGLRenderer({ antialias: !touch, powerPreference: 'high-performance', stencil: false });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Shader error checks call getProgramInfoLog synchronously (a stall); keep them for dev only.
+    this.renderer.debug.checkShaderErrors = !import.meta.env.PROD;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     this.renderer.domElement.id = 'game-canvas';
@@ -26,11 +28,26 @@ export class Renderer {
     window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 200));
   }
 
+  /** Dynamic resolution multiplier (0.5–1), lowered automatically when frames run long. */
+  dynamicScale = 1;
+
   setQuality(q: Quality) {
     this.quality = q;
+    this.dynamicScale = 1;
+    this.applyPixelRatio();
+  }
+
+  /** Max pixel ratio per quality. Phones have 3x screens; rendering all of those pixels is what heats them up. */
+  private get pixelCap() {
+    const touch = isTouchDevice();
+    if (this.quality === 'low') return touch ? 0.8 : 1;
+    if (this.quality === 'medium') return touch ? 1.1 : 1.5;
+    return 2;
+  }
+
+  applyPixelRatio() {
     const dpr = window.devicePixelRatio || 1;
-    const cap = q === 'low' ? 1 : q === 'medium' ? 1.5 : 2;
-    this.renderer.setPixelRatio(Math.min(dpr, cap));
+    this.renderer.setPixelRatio(Math.max(0.5, Math.min(dpr, this.pixelCap) * this.dynamicScale));
     this.resize();
   }
 
