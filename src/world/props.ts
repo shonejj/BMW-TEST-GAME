@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { seeded } from '../engine/util';
+import { lacquerTexture, roofTileTexture } from './textures';
 
 /**
  * Procedural low-poly environment kit: temple architecture, foliage, rocks
@@ -129,27 +130,6 @@ export function rockGeometry(seed: number, color = 0x5e5b55) {
 // Architecture
 // ---------------------------------------------------------------------------
 
-let roofTexture: THREE.CanvasTexture | null = null;
-function getRoofTexture() {
-  if (roofTexture) return roofTexture;
-  const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#3b4246';
-  ctx.fillRect(0, 0, 64, 64);
-  for (let x = 0; x < 64; x += 8) {
-    ctx.fillStyle = '#2a3034';
-    ctx.fillRect(x, 0, 3, 64);
-    ctx.fillStyle = '#4b5458';
-    ctx.fillRect(x + 4, 0, 2, 64);
-  }
-  roofTexture = new THREE.CanvasTexture(c);
-  roofTexture.wrapS = roofTexture.wrapT = THREE.RepeatWrapping;
-  roofTexture.colorSpace = THREE.SRGBColorSpace;
-  return roofTexture;
-}
-
 /** Concave hip roof with upturned corners, as a height field. */
 export function roofGeometry(w: number, d: number, h: number, lift: number) {
   const seg = 10;
@@ -168,7 +148,7 @@ export function roofGeometry(w: number, d: number, h: number, lift: number) {
 }
 
 const mats = {
-  pillar: new THREE.MeshLambertMaterial({ color: 0x6e2219, flatShading: true }),
+  pillar: new THREE.MeshLambertMaterial({ color: 0xffffff }),
   stone: new THREE.MeshLambertMaterial({ color: 0x6b6760, flatShading: true }),
   darkStone: new THREE.MeshLambertMaterial({ color: 0x4a4743, flatShading: true }),
   wood: new THREE.MeshLambertMaterial({ color: 0x4a3122, flatShading: true }),
@@ -178,11 +158,23 @@ const mats = {
 let roofMat: THREE.MeshLambertMaterial | null = null;
 function getRoofMat() {
   if (!roofMat) {
-    const tex = getRoofTexture();
-    tex.repeat.set(0.5, 0.5);
-    roofMat = new THREE.MeshLambertMaterial({ color: 0xffffff, map: tex, side: THREE.DoubleSide, flatShading: true });
+    const tex = roofTileTexture();
+    tex.map.repeat.set(0.5, 0.5);
+    tex.normalMap.repeat.set(0.5, 0.5);
+    roofMat = new THREE.MeshLambertMaterial({ color: 0xffffff, map: tex.map, normalMap: tex.normalMap, side: THREE.DoubleSide });
   }
   return roofMat;
+}
+
+let texturesReady = false;
+/** Paints the architecture textures (called once the level starts building). */
+function ensureTextures() {
+  if (texturesReady) return;
+  texturesReady = true;
+  const lac = lacquerTexture();
+  mats.pillar.map = lac.map;
+  mats.pillar.normalMap = lac.normalMap;
+  mats.pillar.needsUpdate = true;
 }
 
 export interface PropResult {
@@ -193,6 +185,7 @@ export interface PropResult {
 
 /** Open temple pavilion: stone base, red pillars, one or two roof tiers. */
 export function pavilion(w: number, d: number, tiers = 1, pillarH = 3.2): PropResult {
+  ensureTextures();
   const group = new THREE.Group();
   const colliders: PropResult['colliders'] = [];
   const lights: PropResult['lights'] = [];

@@ -5,6 +5,7 @@ import { COLORS } from './vfx';
 import type { Game } from './game';
 
 export type EnemyKind = SpiderKind | 'boss';
+const BLACK = new THREE.Color(0);
 
 interface KindDef {
   name: string;
@@ -214,12 +215,23 @@ export abstract class Enemy {
       this.game.level.move(this.pos, this.knock.x * dt, this.knock.y * dt, this.radius);
       this.knock.multiplyScalar(Math.max(0, 1 - 8 * dt));
     }
-    this.think(dt);
+    if (this.stunT > 0) {
+      // Immobilized: frozen in place, glowing gold.
+      this.stunT -= dt;
+      if (Math.random() < 0.15) this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 0.8, this.pos.z, { count: 1, radius: this.radius, speed: [0, 0.3], up: [0.3, 1], gravity: -0.5, life: [0.4, 0.8], color: COLORS.goldHot, color2: COLORS.gold });
+    } else if (this.staggerT > 0) {
+      this.staggerT -= dt;
+      this.root.rotation.x = Math.sin(this.staggerT * 18) * 0.12 * Math.min(1, this.staggerT * 3);
+    } else {
+      this.root.rotation.x = 0;
+      this.think(dt);
+    }
     this.pos.y = this.game.level.heightAt(this.pos.x, this.pos.z) + this.hover();
 
     this.flash = Math.max(0, this.flash - dt);
     const f = this.flash > 0 ? 1 : 0;
-    for (const m of this.flashMats) m.emissive.setRGB(f, f * 0.9, f * 0.8).add(m.userData.baseEmissive ?? new THREE.Color(0));
+    const gold = this.stunT > 0 ? 0.45 : 0;
+    for (const m of this.flashMats) m.emissive.setRGB(f + gold, f * 0.9 + gold * 0.75, f * 0.8 + gold * 0.15).add(m.userData.baseEmissive ?? BLACK);
     this.root.rotation.y = this.yaw;
     this.squash = Math.max(0, this.squash - dt * 7);
     const sq = this.squash * this.squash * (this.isBoss ? 0.3 : 1);
@@ -230,6 +242,36 @@ export abstract class Enemy {
   hover() { return 0; }
   barHeight() { return 1.6; }
   protected abstract think(dt: number): void;
+  /** Cancel whatever attack is being wound up (stagger / immobilize). */
+  protected abstract interrupt(): void;
+
+  stunT = 0;
+  staggerT = 0;
+  protected poise = 0;
+
+  /** Immobilize: freeze for `t` seconds (bosses resist most of it). */
+  stun(t: number) {
+    if (!this.alive) return;
+    this.stunT = Math.max(this.stunT, this.isBoss ? t * 0.4 : t);
+    this.interrupt();
+  }
+
+  /** Heavy hits stagger regular enemies; bosses break once enough poise damage accumulates. */
+  stagger(poiseDamage: number) {
+    if (!this.alive) return;
+    if (!this.isBoss) {
+      this.staggerT = Math.max(this.staggerT, this.kind === 'armored' ? 0.45 : 0.7);
+      this.interrupt();
+      return;
+    }
+    this.poise += poiseDamage;
+    if (this.poise >= 220) {
+      this.poise = 0;
+      this.staggerT = 1.8;
+      this.interrupt();
+      this.game.onBossBroken(this);
+    }
+  }
   protected abstract animateDeath(dt: number): void;
 
   protected distToPlayer() {
@@ -289,6 +331,13 @@ export class Spider extends Enemy {
 
   barHeight() {
     return this.kind === 'weaver' ? 2.1 : this.kind === 'armored' ? 2.2 : 1.0;
+  }
+
+  protected interrupt() {
+    this.tele?.cancel();
+    this.tele = null;
+    this.rig.root.position.y = 0;
+    if (this.state !== 'spawn') this.setState('recover');
   }
 
   private setState(s: SpiderState) {
@@ -441,7 +490,9 @@ export class Spider extends Enemy {
       r.armR.rotation.x += (raise - r.armR.rotation.x) * damp(10, dt);
       r.torso.rotation.x = this.state === 'shoot' ? -0.3 : 0;
     }
-    r.glowMat.emissiveIntensity = 0.8 + Math.sin(this.game.time * 6) * 0.3;
+    // Wind-ups flare the red glow so the coming attack reads clearly.
+    const winding = this.state === 'windup' || this.state === 'leapwind' || this.state === 'shoot';
+    r.glowMat.emissiveIntensity = winding ? 2.5 + Math.sin(this.game.time * 30) * 0.8 : 0.8 + Math.sin(this.game.time * 6) * 0.3;
   }
 
   protected animateDeath(dt: number) {
@@ -481,6 +532,10 @@ export class Boss extends Enemy {
     this.yaw = 0;
   }
 
+  get introPlaying() {
+    return this.state === 'intro';
+  }
+
   get phase2() {
     return this.hp < this.maxHp * 0.5;
   }
@@ -492,6 +547,11 @@ export class Boss extends Enemy {
   onHit(dir: { x: number; z: number }, knock: number) {
     super.onHit(dir, knock);
     this.barVisible = false; // boss uses the big HUD bar
+  }
+
+  protected interrupt() {
+    this.rig.root.position.y = 0;
+    if (this.state !== 'intro') this.setState('recover');
   }
 
   private setState(s: BossState) {

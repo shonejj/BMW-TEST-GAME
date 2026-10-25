@@ -1,5 +1,6 @@
 import type { Item, Slot } from './loot';
 import type { Quality } from '../engine/renderer';
+import type { SpellId, Talents } from './progression';
 
 export interface SaveData {
   version: 1;
@@ -13,6 +14,9 @@ export interface SaveData {
   nextItemId: number;
   kills: number;
   playTime: number;
+  talents?: Talents;
+  spells?: SpellId[];
+  bestiary?: Record<string, number>;
 }
 
 export interface Settings {
@@ -26,6 +30,7 @@ export interface Settings {
   fpsCap: number;
   /** Lower resolution automatically when the device can't keep up. */
   dynamicRes: boolean;
+  cutscenes: boolean;
 }
 
 const SAVE_KEY = 'monkey-king-save-v1';
@@ -54,6 +59,6 @@ export const loadSave = () => {
 export const writeSave = (s: SaveData) => write(SAVE_KEY, s);
 
 export function loadSettings(defaultQuality: Quality): Settings {
-  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: 60, dynamicRes: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
+  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: 60, dynamicRes: true, cutscenes: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
 }
 export const writeSettings = (s: Settings) => write(SETTINGS_KEY, s);

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PORTRAIT } from './icons';
-import { scaleX, setStyle, setText } from './dom';
+import { scaleX, setClass, setStyle, setText } from './dom';
 
 interface Floater {
   el: HTMLDivElement;
@@ -48,6 +48,10 @@ export class Hud {
   private labels: Label[] = [];
   private tmp = new THREE.Vector3();
   private vignetteT = 0;
+  private focusPips!: HTMLDivElement;
+  private letterbox!: HTMLDivElement;
+  private subtitle!: HTMLDivElement;
+  private skipHint!: HTMLDivElement;
 
   constructor(parent: HTMLElement) {
     this.root = h('div', 'hud');
@@ -69,7 +73,9 @@ export class Hud {
     const xp = h('div', 'bar xp');
     this.xpFill = h('div', 'fill');
     xp.appendChild(this.xpFill);
-    bars.append(hp, mp, xp);
+    this.focusPips = h('div', 'focus-pips');
+    for (let i = 0; i < 3; i++) this.focusPips.appendChild(h('div', 'pip'));
+    bars.append(hp, mp, xp, this.focusPips);
     ptl.append(portrait, bars);
 
     const ptr = h('div', 'hud-tr');
@@ -94,7 +100,12 @@ export class Hud {
     this.floatLayer = h('div', 'floaters');
     this.labelLayer = h('div', 'labels');
     this.vignette = h('div', 'hurt-vignette');
+    this.letterbox = h('div', 'letterbox', '<div class="bar-top"></div><div class="bar-bottom"></div>');
+    this.subtitle = h('div', 'subtitle');
+    this.skipHint = h('div', 'skip-hint', 'Tap or press any button to skip');
+    this.letterbox.append(this.subtitle, this.skipHint);
     this.root.append(this.labelLayer, this.floatLayer, this.vignette, ptl, ptr, this.bossBox, this.title, this.toasts, this.objective);
+    parent.appendChild(this.letterbox);
 
     for (let i = 0; i < 60; i++) {
       const el = h('div', 'floater');
@@ -114,6 +125,34 @@ export class Hud {
     setStyle(this.xpFill, 'transform', scaleX(xp / xpNext));
     setText(this.lvl, String(level));
     setText(this.gold, gold.toLocaleString() + 'g');
+  }
+
+  setFocus(f: number) {
+    const pips = this.focusPips.children;
+    for (let i = 0; i < 3; i++) {
+      const el = pips[i] as HTMLDivElement;
+      const fill = Math.max(0, Math.min(1, f - i));
+      setStyle(el, '--f', fill.toFixed(2));
+      setClass(el, 'full', fill >= 1);
+    }
+  }
+
+  /** Cinematic mode: letterbox bars, gameplay HUD hidden. */
+  setCinematic(on: boolean) {
+    this.letterbox.classList.toggle('on', on);
+    this.root.classList.toggle('cinematic', on);
+    if (!on) this.subtitle.classList.remove('show');
+  }
+
+  setSubtitle(speaker: string, text: string) {
+    if (!text) {
+      this.subtitle.classList.remove('show');
+      return;
+    }
+    this.subtitle.innerHTML = speaker ? `<span class="speaker">${speaker}</span>${text}` : text;
+    this.subtitle.classList.remove('show');
+    void this.subtitle.offsetWidth;
+    this.subtitle.classList.add('show');
   }
 
   setLocation(name: string) {

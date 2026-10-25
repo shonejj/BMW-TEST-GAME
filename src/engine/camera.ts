@@ -13,7 +13,7 @@ export class CameraRig {
   private shakeT = 0;
   private readonly lead = new THREE.Vector3();
   private readonly leadTarget = new THREE.Vector3();
-  private readonly offset = new THREE.Vector3(0, 17.5, 12.5);
+  private readonly offset = new THREE.Vector3(0, 15, 10.8);
   private readonly tmp = new THREE.Vector3();
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}

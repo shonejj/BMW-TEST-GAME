@@ -135,6 +135,155 @@ void main() {
   gl_FragColor = vec4(vColor, (1.0 - r) * vAlpha);
 }`;
 
+/** Radial ground cracks left by heavy smashes (normal blending, glowing edges when hot). */
+const CRACK_FRAG = /* glsl */ `
+uniform float uAlpha;
+uniform float uSeed;
+uniform float uGlow;
+varying vec2 vUv;
+float h(float n) { return fract(sin(n * 91.7 + uSeed) * 43758.5453); }
+void main() {
+  float r = length(vUv);
+  if (r > 1.0) discard;
+  float a = atan(vUv.y, vUv.x) / 6.2832 + 0.5;
+  float n = 9.0;
+  float id = floor(a * n);
+  float f = fract(a * n);
+  float wob = (h(id) - 0.5) * 0.35 + sin(r * 14.0 + id * 3.1) * 0.05;
+  float d = abs(f - 0.5 - wob);
+  float line = smoothstep(0.07 * (1.0 - r * 0.7), 0.0, d) * step(r, 0.35 + 0.65 * h(id + 7.0));
+  float center = smoothstep(0.28, 0.0, r) * 0.7;
+  float alpha = max(line, center) * uAlpha * (1.0 - r * 0.5);
+  vec3 col = mix(vec3(0.04, 0.035, 0.03), vec3(1.0, 0.55, 0.15) * 2.0, uGlow * line * (1.0 - r));
+  gl_FragColor = vec4(col, alpha);
+}`;
+
+/** Camera-facing impact star: four sharp rays plus a soft core. */
+const FLASH_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform float uAlpha;
+varying vec2 vUv;
+void main() {
+  vec2 p = vUv;
+  float r = length(p);
+  if (r > 1.0) discard;
+  float rays = pow(max(0.0, 1.0 - abs(p.x * p.y) * 18.0), 6.0) * (1.0 - r);
+  float core = pow(max(0.0, 1.0 - r), 3.0);
+  gl_FragColor = vec4(uColor * (1.5 + core), (rays + core) * uAlpha);
+}`;
+
+const TRAIL_VERT = /* glsl */ `
+attribute float aAlpha;
+attribute float aEdge;
+varying float vAlpha;
+varying float vEdge;
+void main() {
+  vAlpha = aAlpha;
+  vEdge = aEdge;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const TRAIL_FRAG = /* glsl */ `
+uniform vec3 uColorA;
+uniform vec3 uColorB;
+varying float vAlpha;
+varying float vEdge;
+void main() {
+  vec3 col = mix(uColorA, uColorB, vEdge * vAlpha);
+  gl_FragColor = vec4(col * (1.0 + vEdge), vAlpha * (0.15 + 0.85 * vEdge));
+}`;
+
+/**
+ * Ribbon that follows two points on the weapon (mid-shaft and tip) for a
+ * fraction of a second, giving swings a readable motion arc.
+ */
+export class Trail {
+  readonly mesh: THREE.Mesh;
+  active = false;
+  private readonly max = 28;
+  private readonly life = 0.16;
+  private readonly a: THREE.Vector3[] = [];
+  private readonly b: THREE.Vector3[] = [];
+  private readonly t: number[] = [];
+  private readonly pos: Float32Array;
+  private readonly alpha: Float32Array;
+  private readonly geo = new THREE.BufferGeometry();
+  private readonly mat: THREE.ShaderMaterial;
+
+  constructor(scene: THREE.Scene) {
+    this.pos = new Float32Array(this.max * 2 * 3);
+    this.alpha = new Float32Array(this.max * 2);
+    const edge = new Float32Array(this.max * 2);
+    for (let i = 0; i < this.max; i++) edge[i * 2 + 1] = 1;
+    const index: number[] = [];
+    for (let i = 0; i < this.max - 1; i++) {
+      const v = i * 2;
+      index.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
+    }
+    this.geo.setIndex(index);
+    this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aAlpha', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
+    this.geo.setAttribute('aEdge', new THREE.BufferAttribute(edge, 1));
+    this.mat = new THREE.ShaderMaterial({
+      vertexShader: TRAIL_VERT, fragmentShader: TRAIL_FRAG,
+      uniforms: { uColorA: { value: new THREE.Color(COLORS.gold) }, uColorB: { value: new THREE.Color(COLORS.goldHot) } },
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    });
+    this.mesh = new THREE.Mesh(this.geo, this.mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 6;
+    scene.add(this.mesh);
+  }
+
+  setColors(a: number, b: number) {
+    (this.mat.uniforms.uColorA.value as THREE.Color).set(a);
+    (this.mat.uniforms.uColorB.value as THREE.Color).set(b);
+  }
+
+  push(mid: THREE.Vector3, tip: THREE.Vector3, time: number) {
+    if (!this.active) return;
+    // Insert a midpoint along the arc so low frame rates still read as a curve.
+    const n = this.a.length;
+    if (n > 0) {
+      const pa = this.a[n - 1], pb = this.b[n - 1];
+      this.addSample(pa.clone().lerp(mid, 0.5), pb.clone().lerp(tip, 0.5).lerp(mid, -0.08), time);
+    }
+    this.addSample(mid.clone(), tip.clone(), time);
+  }
+
+  private addSample(a: THREE.Vector3, b: THREE.Vector3, t: number) {
+    this.a.push(a);
+    this.b.push(b);
+    this.t.push(t);
+    if (this.a.length > this.max) {
+      this.a.shift();
+      this.b.shift();
+      this.t.shift();
+    }
+  }
+
+  update(time: number) {
+    while (this.t.length && time - this.t[0] > this.life) {
+      this.a.shift();
+      this.b.shift();
+      this.t.shift();
+    }
+    const n = this.a.length;
+    this.mesh.visible = n >= 2;
+    if (n < 2) return;
+    for (let i = 0; i < this.max; i++) {
+      const j = Math.min(i, n - 1);
+      const k = 1 - (time - this.t[j]) / this.life;
+      this.pos.set([this.a[j].x, this.a[j].y, this.a[j].z, this.b[j].x, this.b[j].y, this.b[j].z], i * 6);
+      const al = i < n ? Math.max(0, k) * (j / (n - 1)) : 0;
+      this.alpha[i * 2] = al;
+      this.alpha[i * 2 + 1] = al;
+    }
+    this.geo.setDrawRange(0, (n - 1) * 6);
+    (this.geo.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    (this.geo.getAttribute('aAlpha') as THREE.BufferAttribute).needsUpdate = true;
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 export function makeGroundMaterial(frag: string, uniforms: Record<string, THREE.IUniform>, additive = true) {
@@ -151,6 +300,7 @@ export function makeGroundMaterial(frag: string, uniforms: Record<string, THREE.
 }
 
 const groundPlane = new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
+const flashPlane = new THREE.PlaneGeometry(2, 2);
 
 export function makeBlob(color: number, alpha: number, radius: number, additive: boolean) {
   const m = new THREE.Mesh(
@@ -305,7 +455,7 @@ export const COLORS = {
   white: 0xffffff,
 };
 
-type PoolKind = 'slash' | 'ring' | 'tele' | 'beam';
+type PoolKind = 'slash' | 'ring' | 'tele' | 'beam' | 'crack' | 'flash';
 interface Pooled {
   obj: THREE.Object3D;
   mesh: THREE.Mesh;
@@ -322,7 +472,9 @@ export class Vfx {
   readonly sparks: Particles;
   readonly dust: Particles;
   private effects: (Effect & { item: Pooled; kind: PoolKind })[] = [];
-  private pools: Record<PoolKind, Pooled[]> = { slash: [], ring: [], tele: [], beam: [] };
+  private pools: Record<PoolKind, Pooled[]> = { slash: [], ring: [], tele: [], beam: [], crack: [], flash: [] };
+  /** Set by the game; used to billboard impact flashes. */
+  camera: THREE.Camera | null = null;
   private time = 0;
   private slashGeo = new Map<string, THREE.BufferGeometry>();
   private beamGeo = new THREE.CylinderGeometry(0.35, 0.35, 1, 12, 1, true).translate(0, 0.5, 0);
@@ -372,6 +524,22 @@ export class Vfx {
         mesh.renderOrder = 2;
         return { obj: mesh, mesh, mat };
       }
+      case 'crack': {
+        const mat = makeGroundMaterial(CRACK_FRAG, { uAlpha: { value: 1 }, uSeed: { value: 0 }, uGlow: { value: 1 } }, false);
+        const mesh = new THREE.Mesh(groundPlane, mat);
+        mesh.renderOrder = 1;
+        return { obj: mesh, mesh, mat };
+      }
+      case 'flash': {
+        const mat = new THREE.ShaderMaterial({
+          vertexShader: BEAM_VERT.replace('vUv = uv;', 'vUv = uv * 2.0 - 1.0;'), fragmentShader: FLASH_FRAG,
+          uniforms: { uColor: { value: new THREE.Color() }, uAlpha: { value: 1 } },
+          transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Mesh(flashPlane, mat);
+        mesh.renderOrder = 9;
+        return { obj: mesh, mesh, mat };
+      }
       case 'beam': {
         const mat = new THREE.ShaderMaterial({
           vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG,
@@ -402,8 +570,9 @@ export class Vfx {
 
   /** Compiles every effect shader up front (call once after the scene is built). */
   prewarm(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
-    const items = (['slash', 'ring', 'tele', 'beam'] as PoolKind[]).flatMap((k) => [this.take(k), this.take(k)]);
-    const kinds = (['slash', 'ring', 'tele', 'beam'] as PoolKind[]).flatMap((k) => [k, k]);
+    const all: PoolKind[] = ['slash', 'ring', 'tele', 'beam', 'crack', 'flash'];
+    const items = all.flatMap((k) => [this.take(k), this.take(k)]);
+    const kinds = all.flatMap((k) => [k, k]);
     for (const it of items) it.obj.position.set(0, -50, 0);
     renderer.compile(this.scene, camera);
     items.forEach((it, i) => {
@@ -537,6 +706,53 @@ export class Vfx {
       u.uTime.value = this.time * 0.3;
       u.uAlpha.value = Math.min(1, k * 8, (1 - k) * 4) * 0.8;
       if (Math.random() < 0.3) this.sparks.emit(p.x, p.y, p.z, { count: 1, radius: radius * 0.9, speed: [0, 0.3], up: [0.5, 1.5], gravity: -0.5, life: [0.6, 1.2], color, color2: COLORS.jadeHot, size: [0.2, 0.5] });
+    });
+  }
+
+  /** Radial cracks in the ground that cool from glowing orange to dark, then fade. */
+  crack(pos: THREE.Vector3, radius: number, dur = 3, hot = true) {
+    const it = this.take('crack');
+    const u = it.mat.uniforms;
+    u.uSeed.value = Math.random() * 100;
+    u.uAlpha.value = 1;
+    u.uGlow.value = hot ? 1 : 0;
+    it.obj.position.set(pos.x, pos.y + 0.045, pos.z);
+    it.obj.scale.setScalar(radius);
+    it.obj.rotation.y = Math.random() * Math.PI * 2;
+    this.add('crack', it, dur, (k) => {
+      u.uGlow.value = hot ? Math.max(0, 1 - k * 4) : 0;
+      u.uAlpha.value = k > 0.7 ? (1 - k) / 0.3 : 1;
+    });
+  }
+
+  /** Bright camera-facing star at an impact point. */
+  flash(pos: THREE.Vector3, size = 1.2, color = COLORS.goldHot, dur = 0.12) {
+    const it = this.take('flash');
+    const u = it.mat.uniforms;
+    (u.uColor.value as THREE.Color).set(color);
+    it.obj.position.copy(pos);
+    if (this.camera) it.obj.quaternion.copy(this.camera.quaternion);
+    it.obj.rotateZ(Math.random() * Math.PI);
+    this.add('flash', it, dur, (k) => {
+      u.uAlpha.value = 1 - k;
+      it.obj.scale.setScalar(size * (0.6 + k * 0.8));
+    });
+  }
+
+  /** Ring of flame on the ground with fire licking up along its edge. */
+  fireRing(pos: THREE.Vector3, radius: number, dur: number) {
+    const it = this.ring(pos, radius, COLORS.fire, 0.97, 0.12, 0.35, 0, 0.06);
+    const u = it.mat.uniforms;
+    const c = it.obj.position.clone();
+    this.add('ring', it, dur, (k, dt) => {
+      u.uAlpha.value = Math.min(1, k * 10, (1 - k) * 6);
+      u.uTime.value = this.time;
+      it.obj.rotation.y += dt;
+      const n = Math.ceil(radius * 3 * Math.min(1, dt * 60));
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        this.sparks.emit(c.x + Math.cos(a) * radius, c.y + 0.1, c.z + Math.sin(a) * radius, { count: 1, speed: [0, 0.4], up: [1.5, 3.5], gravity: -1.5, life: [0.25, 0.55], color: COLORS.fire, color2: COLORS.fireHot, size: [0.35, 0.7] });
+      }
     });
   }
 

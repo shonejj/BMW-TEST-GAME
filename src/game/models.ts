@@ -41,6 +41,10 @@ export interface MonkeyRig {
   legR: THREE.Group;
   staff: THREE.Group;
   staffTip: THREE.Object3D;
+  staffMid: THREE.Object3D;
+  /** Gourd on the belt, and the copy shown in the hand while drinking. */
+  gourdHip: THREE.Object3D;
+  gourdHand: THREE.Object3D;
   cape: THREE.Group;
   tail: THREE.Group;
   mats: {
@@ -51,6 +55,23 @@ export interface MonkeyRig {
     staff: THREE.MeshLambertMaterial;
     gold: THREE.MeshLambertMaterial;
   };
+}
+
+/** Curved cloth strip around the back, flaring towards a ragged hem. Origin at the shoulders. */
+function capeGeometry() {
+  const cols = 8, rows = 6;
+  const g = new THREE.PlaneGeometry(1, 1, cols, rows);
+  const pos = g.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const u = pos.getX(i) + 0.5; // 0..1 across
+    const v = 0.5 - pos.getY(i); // 0 top .. 1 bottom
+    const arc = (u - 0.5) * (1.9 + v * 0.6); // wraps round the back, flaring out
+    const r = 0.26 + v * 0.12;
+    const ragged = v > 0.95 ? (Math.sin(u * 37) * 0.5 + 0.5) * 0.12 : 0;
+    pos.setXYZ(i, Math.sin(arc) * r, -v * (1.1 - ragged), -Math.cos(arc) * r * 0.75 - v * 0.08);
+  }
+  g.computeVertexNormals();
+  return g;
 }
 
 export function buildMonkey(): MonkeyRig {
@@ -82,9 +103,19 @@ export function buildMonkey(): MonkeyRig {
   hips.add(mesh(new THREE.TorusGeometry(0.21, 0.04, 4, 10).rotateX(Math.PI / 2), mats.gold, 0, 0.02, 0));
 
   // Torso
+  const hipsTabs: THREE.Mesh[] = [];
   const torso = joint(hips, 0, 0.02, 0);
   torso.add(mesh(new THREE.CapsuleGeometry(0.21, 0.28, 3, 7).translate(0, 0.3, 0), mats.fur));
   torso.add(mesh(new THREE.BoxGeometry(0.46, 0.3, 0.3).translate(0, 0.38, 0.02), mats.armor));
+  // Chest plate with gold trim, belt and hanging tabards
+  torso.add(mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.26, 6, 1, false, -Math.PI / 2, Math.PI).translate(0, 0.38, 0.06), mats.gold));
+  torso.add(mesh(new THREE.BoxGeometry(0.3, 0.2, 0.04).translate(0, 0.38, 0.2), mats.armor));
+  torso.add(mesh(new THREE.TorusGeometry(0.23, 0.035, 4, 12).rotateX(Math.PI / 2), mats.armor, 0, 0.1, 0));
+  for (const z of [0.2, -0.2]) {
+    const tab = mesh(new THREE.BoxGeometry(0.2, 0.42, 0.025).translate(0, -0.2, 0), mats.cloth, 0, 0.08, z);
+    tab.rotation.x = z > 0 ? -0.08 : 0.08;
+    hipsTabs.push(tab);
+  }
   // Shoulder pads
   const padGeo = new THREE.SphereGeometry(0.13, 6, 4, 0, Math.PI * 2, 0, Math.PI / 2);
   torso.add(mesh(padGeo, mats.gold, -0.27, 0.53, 0));
@@ -99,8 +130,15 @@ export function buildMonkey(): MonkeyRig {
   head.add(mesh(new THREE.SphereGeometry(0.025, 4, 3), eyeMat, -0.07, 0.13, 0.17));
   head.add(mesh(new THREE.SphereGeometry(0.025, 4, 3), eyeMat, 0.07, 0.13, 0.17));
   head.add(mesh(new THREE.TorusGeometry(0.2, 0.025, 4, 12).rotateX(Math.PI / 2 - 0.15), mats.gold, 0, 0.2, 0));
-  // Fur tuft
+  // Fur tuft, brow ridge, nose, sideburns
   head.add(mesh(new THREE.ConeGeometry(0.12, 0.2, 5).rotateX(-0.6), mats.fur, 0, 0.3, -0.05));
+  head.add(mesh(new THREE.BoxGeometry(0.26, 0.04, 0.06).translate(0, 0.17, 0.16), mats.fur));
+  head.add(mesh(new THREE.SphereGeometry(0.035, 5, 4).scale(1, 0.7, 1), mats.fur, 0, 0.08, 0.235));
+  for (const sx of [-1, 1]) {
+    const burn = mesh(new THREE.ConeGeometry(0.06, 0.16, 4), mats.fur, sx * 0.17, 0.02, 0.06);
+    burn.rotation.set(0.3, 0, sx * 2.2);
+    head.add(burn);
+  }
 
   // Arms (pivot at shoulder)
   const armGeo = new THREE.CapsuleGeometry(0.085, 0.45, 3, 6).translate(0, -0.3, 0);
@@ -108,18 +146,27 @@ export function buildMonkey(): MonkeyRig {
   const bracerGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.16, 6).translate(0, -0.45, 0);
   const armL = joint(torso, -0.3, 0.5, 0);
   const armR = joint(torso, 0.3, 0.5, 0);
+  const wrapMat = lambert(0xd8ccb0);
   for (const arm of [armL, armR]) {
     arm.add(mesh(armGeo, mats.fur));
     arm.add(mesh(handGeo, mats.face));
     arm.add(mesh(bracerGeo, mats.gold));
+    arm.add(mesh(new THREE.CylinderGeometry(0.095, 0.09, 0.12, 6).translate(0, -0.25, 0), wrapMat));
   }
+  for (const t of hipsTabs) hips.add(t);
 
-  // Cape hanging from the shoulders
-  const cape = joint(torso, 0, 0.56, -0.16);
-  const capeGeo = new THREE.PlaneGeometry(0.62, 1.05, 1, 3).translate(0, -0.52, 0);
+  // Cape: a curved, flaring cloth wrapped round the back with a tattered hem.
+  const cape = joint(torso, 0, 0.56, -0.12);
   const capeMat = new THREE.MeshLambertMaterial({ color: 0x9a2f2f, side: THREE.DoubleSide, flatShading: true });
-  cape.add(mesh(capeGeo, capeMat));
-  cape.add(mesh(new THREE.TorusGeometry(0.2, 0.06, 4, 10, Math.PI).rotateZ(Math.PI), capeMat, 0, 0.02, 0.06));
+  cape.add(mesh(capeGeometry(), capeMat));
+  cape.add(mesh(new THREE.TorusGeometry(0.22, 0.07, 4, 12, Math.PI).rotateZ(Math.PI).rotateX(-0.3), mats.fur, 0, 0.03, 0.05));
+  // Fur mantle round the shoulders
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 8 - 0.5) * Math.PI * 1.3;
+    const tuft = mesh(new THREE.ConeGeometry(0.07, 0.22, 4), mats.fur, Math.sin(a) * 0.26, 0.6, -Math.cos(a) * 0.1 + 0.02);
+    tuft.rotation.set(Math.PI * 0.8, 0, -a * 0.6);
+    torso.add(tuft);
+  }
 
   // Tail
   const tail = joint(hips, 0, -0.05, -0.2);
@@ -136,11 +183,28 @@ export function buildMonkey(): MonkeyRig {
   const staffTip = new THREE.Object3D();
   staffTip.position.set(0, 0, 1.8);
   staff.add(staffTip);
+  const staffMid = new THREE.Object3D();
+  staffMid.position.set(0, 0, 0.55);
+  staff.add(staffMid);
+
+  // Healing gourd (two bulbs + cord)
+  const gourdGeo = mergeGeometries([
+    colored(new THREE.SphereGeometry(0.11, 7, 5).translate(0, 0, 0), 0xb07a2e, 0.05),
+    colored(new THREE.SphereGeometry(0.075, 6, 4).translate(0, 0.14, 0), 0xb07a2e, 0.05),
+    colored(new THREE.CylinderGeometry(0.025, 0.025, 0.06, 5).translate(0, 0.23, 0), 0x6a1e1e, 0.05),
+  ])!;
+  const gourdMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  const gourdHip = mesh(gourdGeo, gourdMat, -0.24, -0.12, 0.05);
+  gourdHip.rotation.z = 0.3;
+  hips.add(gourdHip);
+  const gourdHand = mesh(gourdGeo, gourdMat, 0, -0.66, 0.06);
+  gourdHand.visible = false;
+  armL.add(gourdHand);
 
   root.traverse((o) => {
     o.frustumCulled = true;
   });
-  return { root, body, hips, torso, head, armL, armR, legL, legR, staff, staffTip, cape, tail, mats };
+  return { root, body, hips, torso, head, armL, armR, legL, legR, staff, staffTip, staffMid, gourdHip, gourdHand, cape, tail, mats };
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +404,23 @@ export function buildBoss(): BossRig {
   const body = joint(root);
   body.add(mesh(new THREE.ConeGeometry(0.9, 2.0, 8).translate(0, 1.0, 0), robe));
   body.add(mesh(new THREE.CylinderGeometry(0.75, 0.9, 0.2, 8).translate(0, 0.1, 0), armor));
+  // Layered robe: split front panels with gold hems, a glowing jade rune belt, a feather cloak.
+  const runeMat = lambert(0x0c2a16, 0x3dff7a, 1.4);
+  for (const sx of [-1, 1]) {
+    const panel = mesh(new THREE.BoxGeometry(0.55, 1.7, 0.08).translate(0, -0.85, 0), robe, sx * 0.3, 1.85, 0.55);
+    panel.rotation.set(-0.28, sx * 0.25, sx * 0.08);
+    body.add(panel);
+    const hem = mesh(new THREE.BoxGeometry(0.57, 0.08, 0.1).translate(0, -1.68, 0), gold, sx * 0.3, 1.85, 0.55);
+    hem.rotation.copy(panel.rotation);
+    body.add(hem);
+  }
+  body.add(mesh(new THREE.TorusGeometry(0.55, 0.06, 4, 16).rotateX(Math.PI / 2), runeMat, 0, 1.75, 0));
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 11 - 0.5) * Math.PI * 1.4 + Math.PI;
+    const f = mesh(new THREE.PlaneGeometry(0.32, 1.9).translate(0, -0.95, 0), feather, Math.sin(a) * 0.75, 2.75, Math.cos(a) * 0.55);
+    f.rotation.set(0.12, a, (Math.random() - 0.5) * 0.15);
+    body.add(f);
+  }
 
   const torso = joint(body, 0, 1.9, 0);
   torso.add(mesh(new THREE.CapsuleGeometry(0.42, 0.7, 3, 8).translate(0, 0.45, 0), armor));
@@ -391,5 +472,5 @@ export function buildBoss(): BossRig {
   spear.add(mesh(new THREE.SphereGeometry(0.14, 6, 4), gold, 0, 0, -1.3));
 
   root.scale.setScalar(1.35);
-  return { root, body, torso, head, wingL, wingR, armL, armR, spear, flashMats: [robe, armor, skin, gold], eyeMat };
+  return { root, body, torso, head, wingL, wingR, armL, armR, spear, flashMats: [robe, armor, skin, gold, runeMat], eyeMat };
 }

@@ -16,7 +16,7 @@ export class Renderer {
     // Shader error checks call getProgramInfoLog synchronously (a stall); keep them for dev only.
     this.renderer.debug.checkShaderErrors = !import.meta.env.PROD;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.25;
     this.renderer.domElement.id = 'game-canvas';
     container.appendChild(this.renderer.domElement);
 
@@ -34,6 +34,8 @@ export class Renderer {
   setQuality(q: Quality) {
     this.quality = q;
     this.dynamicScale = 1;
+    this.renderer.shadowMap.enabled = q === 'high';
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.applyPixelRatio();
   }
 

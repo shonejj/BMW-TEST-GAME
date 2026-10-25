@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clamp, noise2, seeded } from '../engine/util';
 import { makeBlob } from '../game/vfx';
+import { flagstoneTexture, groundDetailTexture, mistTexture } from './textures';
 import {
   balustrade, bambooGeometry, breakable, brokenPillar, colored, fernGeometry, grassGeometry, guardianStatue,
   pavilion, pineGeometry, rockGeometry, sealBarrier, stoneLantern, templeHall, vcMaterial, vcMaterialDouble,
@@ -75,6 +76,10 @@ export class Level {
   readonly zones: ZoneDef[];
   readonly bounds = { x0: -34, x1: 34, z0: -160, z1: 14 };
   private readonly rng = seeded(42);
+  private quality: 'low' | 'medium' | 'high' = 'medium';
+  private stoneMat: THREE.MeshLambertMaterial | null = null;
+  private moon: THREE.DirectionalLight | null = null;
+  private readonly mist: THREE.Mesh[] = [];
 
   constructor(private readonly scene: THREE.Scene) {
     this.zones = [
@@ -211,6 +216,7 @@ export class Level {
   // -------------------------------------------------------------------------
 
   build(quality: 'low' | 'medium' | 'high') {
+    this.quality = quality;
     const density = quality === 'low' ? 0.5 : quality === 'medium' ? 0.8 : 1;
     this.buildLights();
     this.buildTerrain();
@@ -221,14 +227,48 @@ export class Level {
     this.buildBreakables();
     this.buildGates();
     this.bakeStatic();
+    this.buildMist();
     this.scene.add(this.group);
   }
 
   private buildLights() {
-    const hemi = new THREE.HemisphereLight(0x7f9fb6, 0x26301f, 1.7);
-    const moon = new THREE.DirectionalLight(0xb8cce6, 1.6);
-    moon.position.set(-0.6, 1, 0.45);
-    this.group.add(hemi, moon);
+    const hemi = new THREE.HemisphereLight(0x8fb0b4, 0x2b3322, 1.6);
+    const moon = new THREE.DirectionalLight(0xd2dce6, 1.9);
+    moon.position.set(-8, 16, 6);
+    if (this.quality === 'high') {
+      // Real moonlight shadows on High: a tight shadow box that follows the player.
+      moon.castShadow = true;
+      moon.shadow.mapSize.set(1024, 1024);
+      const c = moon.shadow.camera;
+      c.left = -18; c.right = 18; c.top = 18; c.bottom = -18; c.near = 1; c.far = 50;
+      moon.shadow.bias = -0.0008;
+      moon.shadow.normalBias = 0.03;
+    }
+    this.moon = moon;
+    this.group.add(hemi, moon, moon.target);
+  }
+
+  /** Keeps the moon's shadow box centred on the player. */
+  followShadow(p: THREE.Vector3) {
+    if (!this.moon) return;
+    this.moon.position.set(p.x - 8, p.y + 16, p.z + 6);
+    this.moon.target.position.set(p.x, p.y, p.z);
+  }
+
+  /** Low drifting mist layers that follow the camera target. */
+  private buildMist() {
+    if (this.quality === 'low') return;
+    const tex = mistTexture();
+    for (const [y, op, sc] of [[0.6, 0.16, 1], [1.8, 0.09, 1.6]] as const) {
+      const mat = new THREE.MeshBasicMaterial({ map: tex.clone(), color: 0xa8c0c4, transparent: true, opacity: op, depthWrite: false });
+      mat.map!.repeat.set(2 * sc, 2 * sc);
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(70, 70).rotateX(-Math.PI / 2), mat);
+      m.position.y = y;
+      m.renderOrder = 4;
+      m.userData.dynamic = true;
+      this.mist.push(m);
+      this.scene.add(m);
+    }
   }
 
   private addLightPool(x: number, y: number, z: number, r: number) {
@@ -263,44 +303,79 @@ export class Level {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    const detail = groundDetailTexture(this.quality === 'low' ? 128 : 256);
+    this.worldUV(geo, 3);
+    const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: detail.map, normalMap: detail.normalMap }));
+    terrain.receiveShadow = true;
     this.group.add(terrain);
 
   }
 
+  /** World-space planar UVs (1 UV unit = `size` metres) so textures tile at a fixed scale. */
+  private worldUV(geo: THREE.BufferGeometry, size: number) {
+    const pos = geo.getAttribute('position');
+    const uv = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      uv[i * 2] = pos.getX(i) / size;
+      uv[i * 2 + 1] = pos.getZ(i) / size;
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    return geo;
+  }
+
   private buildFlagstones() {
-    const tile = colored(new THREE.BoxGeometry(1.9, 0.12, 1.9), 0x6a665e, 0);
+    // Paved areas are single textured planes (flagstones painted with relief), plus a
+    // scattering of raised / tilted broken slabs for depth.
+    const tex = flagstoneTexture(this.quality === 'low' ? 256 : 512);
+    const mat = new THREE.MeshLambertMaterial({ map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(1.2, 1.2) });
+    this.stoneMat = mat;
+    const add = (geo: THREE.BufferGeometry, y: number) => {
+      const m = new THREE.Mesh(this.worldUV(geo, 6), mat);
+      m.position.y = y;
+      m.receiveShadow = true;
+      this.group.add(m);
+    };
+    const plane = (x0: number, x1: number, z0: number, z1: number) =>
+      new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2).translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
+    add(plane(-15, 15, -81, -44), 0.03);
+    add(plane(-17, 17, -123, -100), STAIRS.h + 0.03);
+    add(new THREE.CircleGeometry(14.6, 40).rotateX(-Math.PI / 2).translate(0, 0, -139), STAIRS.h + 0.035);
+    add(plane(-6, 6, -127, -121), STAIRS.h + 0.032);
+
+    const tile = colored(new THREE.BoxGeometry(1.9, 0.16, 1.9), 0x4f4b45, 0);
     const mats: THREE.Matrix4[] = [];
     const colors: THREE.Color[] = [];
     const place = (x: number, z: number) => {
-      if (this.rng() < 0.06) return; // missing tiles
-      const y = this.heightAt(x, z) + 0.02;
-      const m = new THREE.Matrix4().compose(
-        new THREE.Vector3(x + (this.rng() - 0.5) * 0.1, y, z + (this.rng() - 0.5) * 0.1),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler((this.rng() - 0.5) * 0.04, (this.rng() - 0.5) * 0.08, (this.rng() - 0.5) * 0.04)),
-        new THREE.Vector3(1, 1, 1),
-      );
-      mats.push(m);
-      const v = 0.75 + this.rng() * 0.35;
+      if (this.rng() > 0.03) return;
+      const y = this.heightAt(x, z) + 0.05;
+      mats.push(new THREE.Matrix4().compose(
+        new THREE.Vector3(x + (this.rng() - 0.5) * 0.4, y, z + (this.rng() - 0.5) * 0.4),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler((this.rng() - 0.5) * 0.25, this.rng() * 3, (this.rng() - 0.5) * 0.25)),
+        new THREE.Vector3(0.6 + this.rng() * 0.5, 1, 0.6 + this.rng() * 0.5),
+      ));
+      const v = 0.75 + this.rng() * 0.25;
       colors.push(new THREE.Color(v, v * 0.97, v * 0.92));
     };
     for (let x = -14; x <= 14; x += 2) for (let z = -80; z <= -45; z += 2) place(x, z);
     for (let x = -16; x <= 16; x += 2) for (let z = -122; z <= -101; z += 2) place(x, z);
-    for (let x = -14; x <= 14; x += 2) for (let z = -153; z <= -123; z += 2) if (Math.hypot(x, z + 139) < 14.5 || Math.abs(x) < 6) place(x, z);
+    for (let x = -14; x <= 14; x += 2) for (let z = -153; z <= -123; z += 2) if (Math.hypot(x, z + 139) < 13 || Math.abs(x) < 5) place(x, z);
     this.instanced(tile, vcMaterial, mats, colors);
   }
 
   private buildStairs() {
     const steps = 20;
     const depth = (STAIRS.z0 - STAIRS.z1) / steps;
-    const stepGeo = colored(new THREE.BoxGeometry(12, 1, depth + 0.05), 0x6e6a62, 0.03);
+    const stepGeo = new THREE.BoxGeometry(12, 1, depth + 0.05);
+    // Stretch the stone texture along the step so each tread shows several slabs.
+    const uvs = stepGeo.getAttribute('uv');
+    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * 2, uvs.getY(i) * 0.25);
     const mats: THREE.Matrix4[] = [];
     for (let i = 0; i < steps; i++) {
       const top = ((i + 1) / steps) * STAIRS.h;
       const z = STAIRS.z0 - depth * (i + 0.5);
       mats.push(new THREE.Matrix4().compose(new THREE.Vector3(0, top - 0.5, z), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)));
     }
-    this.instanced(stepGeo, vcMaterial, mats);
+    this.instanced(stepGeo, this.stoneMat!, mats);
     // Side walls + balustrades
     const len = Math.hypot(STAIRS.z0 - STAIRS.z1, STAIRS.h);
     const ang = Math.atan2(STAIRS.h, STAIRS.z0 - STAIRS.z1);
@@ -532,7 +607,12 @@ export class Level {
     if (active) g.mesh.visible = true;
   }
 
-  update(dt: number, time: number) {
+  update(dt: number, time: number, focus?: THREE.Vector3) {
+    for (const [i, m] of this.mist.entries()) {
+      if (focus) m.position.set(focus.x, this.heightAt(0, focus.z) + (i ? 1.8 : 0.6), focus.z - 6);
+      const map = (m.material as THREE.MeshBasicMaterial).map!;
+      map.offset.set((time * (0.004 + i * 0.003) + m.position.x / 140) % 1, (time * 0.002 - m.position.z / 140) % 1);
+    }
     for (const g of this.gates) {
       g.mat.uniforms.uTime.value = time;
       g.fade = clamp(g.fade + (g.active ? 2 : -1.2) * dt, 0, 1);

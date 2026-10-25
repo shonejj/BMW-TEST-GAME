@@ -15,9 +15,11 @@ import {
   BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
   type Inventory, type Item, type Slot,
 } from './loot';
-import { Player, SKILLS, TRANSFORM_DURATION } from './player';
+import { Player } from './player';
+import { DEFAULT_SPELLS, TALENTS, canLearn, pointsAvailable, spellUnlocked, type SpellId, type TalentId } from './progression';
 import { loadSave, loadSettings, writeSave, writeSettings, type SaveData, type Settings } from './save';
 import { COLORS, Vfx } from './vfx';
+import { Cutscene, v, type Shot } from './cutscene';
 
 export interface StrikeOptions {
   origin: THREE.Vector3;
@@ -30,6 +32,9 @@ export interface StrikeOptions {
   color: number;
   burn?: boolean;
   silentSwing?: boolean;
+  /** Interrupt regular enemies; chip boss poise. */
+  stagger?: boolean;
+  poise?: number;
 }
 
 interface Projectile {
@@ -91,12 +96,14 @@ export class Game {
   debris!: Debris;
   rain!: Rain;
   private overlays!: EnemyOverlays;
+  private cutscene: Cutscene | null = null;
   player!: Player;
   readonly touch = isTouchDevice();
   settings: Settings;
   inventory: Inventory = { gold: 0, bag: [], equipped: {} };
 
   time = 0;
+  bestiary: Record<string, number> = {};
   readonly perf = { logicMs: 0, renderMs: 0, calls: 0 };
   private state: GameState = 'boot';
   private enemies: Enemy[] = [];
@@ -155,6 +162,7 @@ export class Game {
     this.renderer.scene.add(this.rain.lines);
     this.player = new Player(this);
     this.overlays = new EnemyOverlays(this.renderer.scene);
+    if (q === 'high') this.player.root.traverse((o) => (o.castShadow = true));
     this.miniMap = this.level.renderMinimap();
     this.audio.setVolume(this.settings.volume);
     this.camRig.shakeScale = this.settings.screenShake;
@@ -212,6 +220,9 @@ export class Game {
     if (save) {
       this.player.level = save.level;
       this.player.xp = save.xp;
+      this.player.talents = save.talents ?? {};
+      this.bestiary = save.bestiary ?? {};
+      this.player.spells = (save.spells ?? DEFAULT_SPELLS).map((id, i) => (spellUnlocked(id, this.player.talents) ? id : DEFAULT_SPELLS[i]));
       this.inventory = { gold: save.gold, bag: save.bag, equipped: save.equipped };
       this.ng = save.ng;
       this.kills = save.kills;
@@ -220,6 +231,9 @@ export class Game {
     } else {
       this.player.level = 1;
       this.player.xp = 0;
+      this.player.talents = {};
+      this.bestiary = {};
+      this.player.spells = [...DEFAULT_SPELLS];
       this.player.fury = 0;
       this.inventory = { gold: 0, bag: [], equipped: {} };
       this.ng = 0;
@@ -236,7 +250,8 @@ export class Game {
     this.controls.setVisible(true);
     this.state = 'playing';
     this.lastZoneName = '';
-    this.hud.showTitle(cleared === 0 ? 'Chapter One' : `Chapter One · ${this.ng ? 'Torment ' + this.ng : 'Continue'}`, cleared === 0 ? 'Mountain-Sea Temple' : this.level.zones[cleared].name);
+    if (cleared === 0 && this.settings.cutscenes) this.playIntro();
+    else this.hud.showTitle(cleared === 0 ? 'Chapter One' : `Chapter One · ${this.ng ? 'Torment ' + this.ng : 'Continue'}`, cleared === 0 ? 'Mountain-Sea Temple' : this.level.zones[cleared].name);
     this.hud.setObjective('Explore the temple grounds');
     this.save();
   }
@@ -245,7 +260,7 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'paused';
     this.controls.setVisible(false);
-    this.menus.showPause();
+    this.menus.showGameMenu();
   }
 
   resume() {
@@ -261,7 +276,7 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'paused';
     this.controls.setVisible(false);
-    this.menus.showInventory();
+    this.menus.showGameMenu('equipment');
   }
 
   applySettings(p: Partial<Settings>) {
@@ -356,6 +371,9 @@ export class Game {
     const data: SaveData = {
       version: 1,
       level: this.player.level,
+      talents: this.player.talents,
+      bestiary: this.bestiary,
+      spells: this.player.spells,
       xp: this.player.xp,
       gold: this.inventory.gold,
       bag: this.inventory.bag,
@@ -398,6 +416,8 @@ export class Game {
       const roll = this.player.rollDamage(o.mult, o.skill);
       const dir = d > 0.01 ? { x: dx / d, z: dz / d } : { x: Math.sin(o.yaw), z: Math.cos(o.yaw) };
       this.dealDamage(e, roll.amount, roll.crit, dir, o.knock, 'hit');
+      if (o.stagger && e.alive) e.stagger(o.poise ?? 40);
+      if (roll.crit || o.stagger) this.vfx.flash(this.tmp.set(e.pos.x, e.pos.y + 1, e.pos.z), roll.crit ? 1.4 : 1.1, o.color, 0.1);
       if (o.burn) {
         e.burn = 3;
         e.burnDps = Math.max(e.burnDps * 0.5, roll.amount * 0.35);
@@ -455,6 +475,7 @@ export class Game {
 
   dealDamage(e: Enemy, amount: number, crit: boolean, dir: { x: number; z: number } | null, knock: number, kind: 'hit' | 'burn' | 'poison') {
     if (!e.alive || amount <= 0) return;
+    if (e.isBoss && e.staggerT > 0) amount = Math.round(amount * 1.3);
     e.hp -= amount;
     if (dir) e.onHit(dir, knock);
     if (this.settings.damageNumbers) {
@@ -462,7 +483,7 @@ export class Game {
       this.hud.floatText(e.pos, crit ? `${amount}!` : String(amount), cls, crit ? 1.1 : 0.8);
     }
     if (!this.player.transformed) {
-      const gain = amount * 0.05 * (this.player.stats.powers.has('furyGain') ? 1.6 : 1);
+      const gain = amount * 0.05 * this.player.stats.furyGain;
       const before = this.player.fury;
       this.player.fury = Math.min(100, this.player.fury + gain);
       if (before < 100 && this.player.fury >= 100) {
@@ -479,6 +500,7 @@ export class Game {
 
   private onEnemyKilled(e: Enemy) {
     this.kills++;
+    this.bestiary[e.kind] = (this.bestiary[e.kind] ?? 0) + 1;
     this.gainXp(e.xp);
     if (this.player.stats.powers.has('killMana')) this.player.mana = Math.min(this.player.stats.maxMana, this.player.mana + 8);
     if (e.isBoss) return;
@@ -503,6 +525,7 @@ export class Game {
       this.vfx.shockwave(p.pos, 3, COLORS.gold, 0.6);
       this.vfx.sparks.emit(p.pos.x, p.pos.y + 1, p.pos.z, { count: 40, radius: 0.8, speed: [0.5, 2], up: [3, 9], gravity: -1, life: [0.6, 1.4], color: COLORS.goldHot, color2: COLORS.gold });
       this.hud.floatText(p.pos, 'LvL Up ⬆', 'levelup', 1.8);
+      if (pointsAvailable(p.level, p.talents) > 0) this.hud.toast('Talent point available — open the menu (Self-Advance)', '#ffd46a');
       this.audio.play('levelup');
     }
   }
@@ -517,6 +540,7 @@ export class Game {
     this.enemies.push(e);
     if (zone >= 0) this.zoneEnemies[zone].push(e);
     if (kind === 'boss') this.boss = e as Boss;
+    if (this.settings.quality === 'high') e.root.traverse((o) => (o.castShadow = true));
     return e;
   }
 
@@ -714,6 +738,33 @@ export class Game {
     this.saveTimer = 0.5;
   }
 
+  learnTalent(id: TalentId) {
+    const p = this.player;
+    const def = TALENTS.find((t) => t.id === id)!;
+    if (canLearn(def, p.talents, p.level)) return;
+    p.talents[id] = (p.talents[id] ?? 0) + 1;
+    p.computeStats(this.inventory);
+    this.audio.play('levelup');
+    this.save();
+  }
+
+  resetTalents() {
+    const p = this.player;
+    p.talents = {};
+    p.spells = p.spells.map((id, i) => (spellUnlocked(id, p.talents) ? id : DEFAULT_SPELLS[i]));
+    p.computeStats(this.inventory);
+    this.save();
+  }
+
+  setSpell(slot: number, id: SpellId) {
+    const p = this.player;
+    const other = p.spells.indexOf(id);
+    if (other >= 0) [p.spells[other], p.spells[slot]] = [p.spells[slot], p.spells[other]];
+    else p.spells[slot] = id;
+    p.cooldowns[slot] = 0;
+    this.save();
+  }
+
   equip(it: Item) {
     const inv = this.inventory;
     const idx = inv.bag.findIndex((b) => b.id === it.id);
@@ -750,6 +801,51 @@ export class Game {
   // -------------------------------------------------------------------------
   // Events
   // -------------------------------------------------------------------------
+
+  /** Brief slow motion, e.g. for perfect dodges. */
+  slowmo(t: number) {
+    this.slowmoT = Math.max(this.slowmoT, t);
+  }
+
+  /** Gamepad / phone vibration, if supported. */
+  rumble(strength: number, ms: number) {
+    if (this.settings.screenShake === 0) return;
+    for (const pad of navigator.getGamepads?.() ?? []) {
+      const act = (pad as Gamepad & { vibrationActuator?: { playEffect?: (t: string, o: object) => Promise<unknown> } } | null)?.vibrationActuator;
+      act?.playEffect?.('dual-rumble', { duration: ms, strongMagnitude: Math.min(1, strength), weakMagnitude: Math.min(1, strength * 0.6) }).catch(() => {});
+    }
+    if (this.touch && strength >= 0.5 && 'vibrate' in navigator) navigator.vibrate(Math.min(60, ms / 3));
+  }
+
+  onPerfectDodge() {
+    this.slowmo(0.45);
+    this.hud.toast('Perfect dodge! +1 Focus', '#ffe08a');
+    this.audio.play('perfect');
+    this.vfx.flash(this.tmp.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), 2, COLORS.goldHot, 0.2);
+    this.vfx.shockwave(this.player.pos, 2.5, COLORS.goldHot, 0.4);
+  }
+
+  /** Immobilize spell: freeze every enemy inside the golden seal. */
+  immobilize(center: THREE.Vector3, r: number, t: number) {
+    this.vfx.shockwave(center, r, COLORS.goldHot, 0.5, 0.06);
+    this.vfx.shockwave(center, r * 0.6, COLORS.gold, 0.35, 0.2);
+    this.vfx.flash(this.tmp.set(center.x, center.y + 1, center.z), 2.5, COLORS.goldHot, 0.2);
+    this.audio.play('immobilize');
+    let n = 0;
+    for (const e of this.enemies) {
+      if (!e.alive || Math.hypot(e.pos.x - center.x, e.pos.z - center.z) > r + e.radius) continue;
+      e.stun(t);
+      n++;
+    }
+    if (n) this.hud.toast(`Immobilized ×${n}`, '#ffd46a');
+  }
+
+  onBossBroken(boss: Enemy) {
+    this.hud.toast('Broken! The Blackfeather Lord reels', '#ffd46a');
+    this.vfx.flash(this.tmp.set(boss.pos.x, boss.pos.y + 3, boss.pos.z), 4, COLORS.goldHot, 0.25);
+    this.audio.play('perfect');
+    this.slowmo(0.25);
+  }
 
   onPlayerDeath() {
     this.state = 'dead';
@@ -844,9 +940,10 @@ export class Game {
     }
     if (this.input.consume('inventory')) {
       if (this.state === 'playing') this.openInventory();
-      else if (this.state === 'paused' && this.menus.current === 'inventory') this.resume();
+      else if (this.state === 'paused' && this.menus.current === 'game') this.resume();
     }
 
+    this.menus.update(rawDt);
     let dt = rawDt;
     if (this.state === 'paused' || this.state === 'menu' || this.state === 'boot') dt = 0;
     if (this.hitstopT > 0) {
@@ -864,7 +961,7 @@ export class Game {
       this.tmp.set(Math.sin(this.time * 0.1) * 3, 0, -6 + Math.cos(this.time * 0.08) * 4);
       this.camRig.update(rawDt, this.tmp);
       this.rain.update(rawDt, this.camRig.target);
-      this.level.update(rawDt, this.time);
+      this.level.update(rawDt, this.time, this.camRig.target);
       this.vfx.update(rawDt);
       this.renderer.render();
       return;
@@ -876,7 +973,8 @@ export class Game {
       if (this.state === 'playing' || this.state === 'dead') {
         this.player.update(dt);
         this.updateDirector(dt);
-        for (const e of this.enemies) e.update(dt);
+        // During cutscenes only the boss's entrance animation keeps running.
+        for (const e of this.enemies) if (!this.cutscene || (e instanceof Boss && e.introPlaying)) e.update(dt);
         this.enemies = this.enemies.filter((e) => !e.removed);
         this.separate();
         this.updateProjectiles(dt);
@@ -885,14 +983,19 @@ export class Game {
       }
       this.debris.update(dt);
       this.vfx.update(dt);
-      this.level.update(dt, this.time);
+      this.level.update(dt, this.time, this.camRig.target);
+      this.level.followShadow(this.player.pos);
     }
     this.rain.update(rawDt, this.camRig.target);
     // Look-ahead: lead the camera towards where the player is moving / facing.
     const pl = this.player;
     const lead = !pl.alive ? 0 : pl.speedNow > 1 ? 1.8 : 0.8;
     this.camRig.setLead(Math.sin(pl.yaw) * lead, Math.cos(pl.yaw) * lead);
-    this.camRig.update(rawDt, pl.pos);
+    if (this.cutscene) {
+      if (this.input.anyPress && this.cutscene.elapsed > 0.4) this.cutscene.skip();
+      this.cutscene?.update(rawDt);
+    } else this.camRig.update(rawDt, pl.pos);
+    this.input.anyPress = false;
     this.overlays.update(this.enemies, this.renderer.camera);
     this.renderer.render();
 
@@ -900,7 +1003,9 @@ export class Game {
     const p = this.player;
     this.hud.setStats(p.hp, p.stats.maxHp, p.mana, p.stats.maxMana, p.xp, p.xpToNext, p.level, this.inventory.gold);
     this.hud.update(dt > 0 ? rawDt : 0, this.renderer.camera);
-    this.controls.update(p.cooldowns, SKILLS.map((s) => s.cd * (1 - p.stats.cdr)), p.mana, SKILLS.map((s) => s.mana), p.fury, p.transformTime, TRANSFORM_DURATION);
+    this.controls.update(p);
+    this.hud.setFocus(p.focus);
+    this.audio.boss = !!(this.boss && this.boss.alive);
     if (this.boss && this.boss.alive) this.hud.setBoss(this.boss.def.name + (this.ng ? ` · Torment ${this.ng}` : ''), this.boss.hp / this.boss.maxHp);
     this.miniTimer -= rawDt;
     if (this.miniTimer <= 0) {
@@ -917,12 +1022,72 @@ export class Game {
     }
     if (this.victoryTimer > 0 && this.state === 'playing') {
       this.victoryTimer -= rawDt;
-      if (this.victoryTimer <= 0) this.showVictory();
+      if (this.victoryTimer <= 0) {
+        if (this.settings.cutscenes) this.playVictoryScene();
+        else this.showVictory();
+      }
     }
     if (this.saveTimer > 0) {
       this.saveTimer -= rawDt;
       if (this.saveTimer <= 0) this.save();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Cutscenes
+  // -------------------------------------------------------------------------
+
+  private startCutscene(shots: Shot[], after: () => void = () => {}) {
+    this.input.suppressed = true;
+    this.input.anyPress = false;
+    this.controls.setVisible(false);
+    this.cutscene = new Cutscene({
+      camera: this.renderer.camera,
+      setCinematic: (on) => this.hud.setCinematic(on),
+      setSubtitle: (s, t) => this.hud.setSubtitle(s, t),
+      showTitle: (a, b) => this.hud.showTitle(a, b),
+    }, shots, () => {
+      this.cutscene = null;
+      this.input.suppressed = false;
+      this.camRig.snap(this.player.pos);
+      if (this.state === 'playing') this.controls.setVisible(true);
+      after();
+    });
+  }
+
+  private playIntro() {
+    const p = this.player.pos;
+    this.startCutscene([
+      { dur: 4.6, from: { pos: v(-12, 17, -116), look: v(0, 7, -160) }, to: { pos: v(7, 11, -128), look: v(0, 6, -158) },
+        subtitle: ['', 'For forty days the bells of the Mountain-Sea Temple have been silent.'] },
+      { dur: 4.4, from: { pos: v(-14, 16, -112), look: v(0, 4, -100) }, to: { pos: v(10, 12, -84), look: v(0, 1, -66) },
+        subtitle: ['', 'The monks fled. Something crawled up from beneath the stairs, and stayed.'] },
+      { dur: 4.2, from: { pos: v(-8, 9, 18), look: v(p.x, 1, p.z) }, to: { pos: v(p.x + 2, 6.5, p.z + 8), look: v(p.x, 1.2, p.z - 1) },
+        title: ['Chapter One', 'Mountain-Sea Temple'],
+        subtitle: ['Little Monkey', 'Something foul nests in the main hall. Let us see what it is made of.'] },
+    ]);
+  }
+
+  private playBossIntro() {
+    const b = v(0, 5, -141);
+    this.startCutscene([
+      { dur: 2.6, from: { pos: v(0, 11, -122), look: v(0, 9, -146) }, to: { pos: v(-5, 7, -128), look: v(0, 6, -141) },
+        onStart: () => this.audio.play('roar'), subtitle: ['', 'Black feathers fall like rain…'] },
+      { dur: 3.2, from: { pos: v(6, 6.5, -134), look: v(b.x, 7, b.z) }, to: { pos: v(4, 7.5, -132), look: v(b.x, 8, b.z) }, title: ['Hall of Black Feathers', 'Blackfeather Lord'],
+        subtitle: ['Blackfeather Lord', 'Another little monkey, come to die in my temple?'] },
+      { dur: 2.6, from: { pos: v(this.player.pos.x + 3, 8, this.player.pos.z + 7), look: v(this.player.pos.x, 6, this.player.pos.z) }, to: { pos: v(this.player.pos.x + 1, 7, this.player.pos.z + 6), look: v(this.player.pos.x, 6, this.player.pos.z - 2) },
+        subtitle: ['Little Monkey', 'Your temple? I will be taking it back.'] },
+    ]);
+  }
+
+  private playVictoryScene() {
+    const p = this.player.pos.clone();
+    this.startCutscene([
+      { dur: 5, from: { pos: v(p.x + 7, p.y + 4, p.z + 5), look: v(p.x, p.y + 1.2, p.z) }, to: { pos: v(p.x - 6, p.y + 3, p.z + 6), look: v(p.x, p.y + 1.4, p.z) },
+        subtitle: ['Little Monkey', 'One down. The mountain still remembers the Great Sage.'] },
+      { dur: 3.5, from: { pos: v(0, 14, -126), look: v(0, 8, -160) }, to: { pos: v(0, 20, -118), look: v(0, 9, -160) }, subtitle: ['', 'The temple bells ring again.'],
+        onStart: () => this.audio.play('seal') },
+    ], () => this.showVictory());
   }
 
   private showVictory() {
@@ -953,7 +1118,8 @@ export class Game {
         this.waveDelay = 0;
         if (z.closesGate !== undefined) this.level.setGate(z.closesGate, true);
         if (i === zones.length - 1) {
-          this.hud.showTitle(z.name, 'Blackfeather Lord');
+          if (this.settings.cutscenes) this.playBossIntro();
+          else this.hud.showTitle(z.name, 'Blackfeather Lord');
           this.hud.setObjective('Defeat the Blackfeather Lord');
         } else this.hud.setObjective('Defeat the yaoguai');
       }
@@ -970,6 +1136,7 @@ export class Game {
         }
       } else if (alive === 0) {
         this.zoneState[i] = 'cleared';
+        this.player.refillGourd();
         if (z.opensGate !== undefined) {
           this.level.setGate(z.opensGate, false);
           this.hud.toast('The seal is broken', '#ff9a6a');

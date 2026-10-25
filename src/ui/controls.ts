@@ -1,23 +1,30 @@
 import type { Action, Input } from '../engine/input';
+import type { Player } from '../game/player';
 import { ICONS } from './icons';
 import { setClass, setStyle, setText } from './dom';
 
-interface SkillButton {
+interface Button {
   el: HTMLDivElement;
+  icon: HTMLDivElement;
   cd: HTMLDivElement;
   cdText: HTMLDivElement;
+  badge: HTMLDivElement;
 }
 
 /**
- * On-screen controls. On touch devices: a floating joystick on the left and
- * an attack button with an arc of skill buttons on the right (matching the
- * reference layout). On desktop the same buttons render as a compact skill bar
- * with key hints.
+ * On-screen controls. On touch devices: a floating joystick on the left and,
+ * on the right, a big staff-attack button with heavy attack, dodge, gourd,
+ * four spells and the transformation around it (like the reference layout).
+ * On desktop the same buttons render as a compact action bar with key hints.
+ * Everything is also playable with a gamepad.
  */
 export class Controls {
   readonly root: HTMLDivElement;
-  private skills: SkillButton[] = [];
-  private transformBtn: SkillButton;
+  private spells: Button[] = [];
+  private spellIds: string[] = ['', '', '', ''];
+  private heavy: Button;
+  private gourd: Button;
+  private transformBtn: Button;
   private furyRing: SVGCircleElement;
   private stick: HTMLDivElement;
   private knob: HTMLDivElement;
@@ -30,7 +37,7 @@ export class Controls {
     this.root.className = 'controls ' + (touch ? 'touch' : 'desktop');
     parent.appendChild(this.root);
 
-    // Joystick
+    // Floating joystick: appears wherever the left thumb lands.
     const zone = document.createElement('div');
     zone.className = 'stick-zone';
     this.stick = document.createElement('div');
@@ -67,12 +74,10 @@ export class Controls {
     zone.addEventListener('pointerup', end);
     zone.addEventListener('pointercancel', end);
 
-    // Action cluster
     const cluster = document.createElement('div');
     cluster.className = 'cluster';
     this.root.appendChild(cluster);
 
-    const attack = this.button(cluster, 'attack big', ICONS.attack, touch ? '' : 'LMB');
     const press = (el: HTMLElement, down: () => void, up?: () => void) => {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -89,17 +94,21 @@ export class Controls {
       el.addEventListener('pointerup', release);
       el.addEventListener('pointercancel', release);
     };
-    press(attack.el, () => this.input.setTouchAttack(true), () => this.input.setTouchAttack(false));
 
-    const icons = [ICONS.whirl, ICONS.flame, ICONS.slam, ICONS.gale];
-    const keys = ['1', '2', '3', '4'];
-    for (let i = 0; i < 4; i++) {
-      const b = this.button(cluster, `skill s${i}`, icons[i], touch ? '' : keys[i]);
-      press(b.el, () => this.input.press(`skill${i}` as Action));
-      this.skills.push(b);
-    }
+    const attack = this.button(cluster, 'attack big', ICONS.attack, touch ? '' : 'LMB');
+    press(attack.el, () => this.input.setTouchAttack(true), () => this.input.setTouchAttack(false));
+    this.heavy = this.button(cluster, 'heavy', ICONS.heavy, touch ? '' : 'RMB');
+    press(this.heavy.el, () => this.input.setTouchHeavy(true), () => this.input.setTouchHeavy(false));
     const dodge = this.button(cluster, 'dodge', ICONS.dodge, touch ? '' : 'Space');
     press(dodge.el, () => this.input.press('dodge'));
+    this.gourd = this.button(cluster, 'gourd', ICONS.gourd, touch ? '' : 'G');
+    press(this.gourd.el, () => this.input.press('gourd'));
+    const keys = ['1', '2', '3', '4'];
+    for (let i = 0; i < 4; i++) {
+      const b = this.button(cluster, `skill s${i}`, '', touch ? '' : keys[i]);
+      press(b.el, () => this.input.press(`skill${i}` as Action));
+      this.spells.push(b);
+    }
     this.transformBtn = this.button(cluster, 'transform', ICONS.transform, touch ? '' : 'T');
     press(this.transformBtn.el, () => this.input.press('transform'));
     this.furyRing = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -113,25 +122,28 @@ export class Controls {
     ring.appendChild(this.furyRing);
     this.transformBtn.el.appendChild(ring);
 
-    // Top buttons
     const top = document.createElement('div');
     top.className = 'top-buttons';
     this.root.appendChild(top);
-    const bag = this.button(top, 'small', ICONS.bag, touch ? '' : 'I');
-    press(bag.el, () => this.input.press('inventory'));
+    const menu = this.button(top, 'small', ICONS.menu, touch ? '' : 'I');
+    press(menu.el, () => this.input.press('inventory'));
     const pause = this.button(top, 'small', ICONS.pause, touch ? '' : 'Esc');
     press(pause.el, () => this.input.press('pause'));
   }
 
-  private button(parent: HTMLElement, cls: string, icon: string, key: string): SkillButton {
+  private button(parent: HTMLElement, cls: string, icon: string, key: string): Button {
     const el = document.createElement('div');
     el.className = 'btn ' + cls;
-    el.innerHTML = `<div class="icon">${icon}</div>`;
+    const ic = document.createElement('div');
+    ic.className = 'icon';
+    ic.innerHTML = icon;
     const cd = document.createElement('div');
     cd.className = 'cd';
     const cdText = document.createElement('div');
     cdText.className = 'cd-text';
-    el.append(cd, cdText);
+    const badge = document.createElement('div');
+    badge.className = 'badge';
+    el.append(ic, cd, cdText, badge);
     if (key) {
       const k = document.createElement('div');
       k.className = 'key';
@@ -139,7 +151,7 @@ export class Controls {
       el.appendChild(k);
     }
     parent.appendChild(el);
-    return { el, cd, cdText };
+    return { el, icon: ic, cd, cdText, badge };
   }
 
   private moveKnob(x: number, y: number) {
@@ -151,8 +163,7 @@ export class Controls {
     }
     this.knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
     const nx = dx / this.radius, ny = dy / this.radius;
-    const m = Math.hypot(nx, ny);
-    if (m < 0.12) this.input.setTouchMove(0, 0);
+    if (Math.hypot(nx, ny) < 0.12) this.input.setTouchMove(0, 0);
     else this.input.setTouchMove(nx, ny);
   }
 
@@ -161,22 +172,36 @@ export class Controls {
     if (!v) {
       this.input.setTouchMove(0, 0);
       this.input.setTouchAttack(false);
+      this.input.setTouchHeavy(false);
     }
   }
 
-  update(cooldowns: number[], maxCds: number[], mana: number, costs: number[], fury: number, transformLeft: number, transformMax: number) {
+  update(p: Player) {
     for (let i = 0; i < 4; i++) {
-      const b = this.skills[i];
-      const frac = maxCds[i] > 0 ? cooldowns[i] / maxCds[i] : 0;
+      const b = this.spells[i];
+      const def = p.spellDef(i);
+      if (this.spellIds[i] !== def.id) {
+        this.spellIds[i] = def.id;
+        b.icon.innerHTML = (ICONS as Record<string, string>)[def.id] ?? ICONS.whirl;
+        b.el.title = def.name;
+      }
+      const max = p.spellCooldown(i);
+      const frac = max > 0 ? p.cooldowns[i] / max : 0;
       setStyle(b.cd, '--p', frac.toFixed(3));
       setStyle(b.cd, 'display', frac > 0 ? 'block' : 'none');
-      setText(b.cdText, cooldowns[i] > 0 ? Math.ceil(cooldowns[i]).toString() : '');
-      setClass(b.el, 'nomana', mana < costs[i]);
+      setText(b.cdText, p.cooldowns[i] > 0 ? Math.ceil(p.cooldowns[i]).toString() : '');
+      setClass(b.el, 'nomana', p.mana < def.mana);
     }
-    const transformed = transformLeft > 0;
-    const f = transformed ? transformLeft / transformMax : fury / 100;
+    setText(this.gourd.badge, String(p.gourd));
+    setClass(this.gourd.el, 'empty', p.gourd <= 0);
+    const pips = Math.floor(p.focus);
+    setText(this.heavy.badge, pips > 0 ? '●'.repeat(pips) : '');
+    setClass(this.heavy.el, 'charging', p.state === 'charge');
+    setStyle(this.heavy.el, '--charge', String(p.chargeLevel));
+    const transformed = p.transformTime > 0;
+    const f = transformed ? p.transformTime / p.stats.transformTime : p.fury / 100;
     setStyle(this.furyRing, 'stroke-dasharray', `${(f * 100).toFixed(1)} 100`);
-    setClass(this.transformBtn.el, 'ready', fury >= 100 && !transformed);
+    setClass(this.transformBtn.el, 'ready', p.fury >= 100 && !transformed);
     setClass(this.transformBtn.el, 'active', transformed);
   }
 }

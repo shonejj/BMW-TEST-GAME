@@ -1,4 +1,4 @@
-export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack';
+export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack' | 'gourd' | 'heavy';
 
 const KEY_ACTIONS: Record<string, Action> = {
   Space: 'dodge', ShiftLeft: 'dodge', ShiftRight: 'dodge', KeyK: 'dodge',
@@ -10,11 +10,15 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyI: 'inventory', Tab: 'inventory',
   Escape: 'pause', KeyP: 'pause',
   KeyJ: 'attack',
+  KeyG: 'gourd', KeyH: 'gourd',
+  KeyL: 'heavy',
 };
 
+// Standard gamepad: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 LT, 7 RT, 8 Back, 9 Start, 11 R3, 12 D-pad up.
+// X = light attack (held), Y = heavy attack (held).
 const PAD_ACTIONS: [number, Action][] = [
-  [0, 'dodge'], [4, 'skill0'], [5, 'skill1'], [6, 'skill2'], [7, 'skill3'],
-  [3, 'transform'], [8, 'inventory'], [9, 'pause'],
+  [0, 'dodge'], [1, 'gourd'], [4, 'skill0'], [5, 'skill1'], [6, 'skill2'], [7, 'skill3'],
+  [11, 'transform'], [12, 'transform'], [8, 'inventory'], [9, 'pause'],
 ];
 
 /**
@@ -25,16 +29,25 @@ export class Input {
   moveX = 0;
   moveY = 0;
   attackHeld = false;
+  /** Heavy attack is charged while held and released to strike. */
+  heavyHeld = false;
   /** Mouse position in normalised device coordinates, when the mouse is being used to aim. */
   mouseNdc: { x: number; y: number } | null = null;
   /** Right-stick aim from a gamepad, screen space. */
   padAim: { x: number; y: number } | null = null;
   usingGamepad = false;
+  /** While true (cutscenes), gameplay input reads as idle. */
+  suppressed = false;
+  /** Set by any key / click / touch / gamepad button; used to skip cutscenes. */
+  anyPress = false;
 
   private keys = new Set<string>();
   private pressed = new Set<Action>();
   private touchMove = { x: 0, y: 0 };
   private touchAttack = false;
+  private touchHeavy = false;
+  private mouseHeavy = false;
+  private keyHeavy = false;
   private mouseAttack = false;
   private keyAttack = false;
   private padAttack = false;
@@ -45,19 +58,23 @@ export class Input {
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Tab') e.preventDefault();
       if (e.repeat) return;
+      this.anyPress = true;
       this.keys.add(e.code);
       const a = KEY_ACTIONS[e.code];
       if (a === 'attack') this.keyAttack = true;
+      else if (a === 'heavy') this.keyHeavy = true;
       else if (a) this.pressed.add(a);
       this.usingGamepad = false;
     });
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
       if (KEY_ACTIONS[e.code] === 'attack') this.keyAttack = false;
+      if (KEY_ACTIONS[e.code] === 'heavy') this.keyHeavy = false;
     });
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.mouseAttack = this.keyAttack = this.touchAttack = false;
+      this.mouseHeavy = this.keyHeavy = this.touchHeavy = false;
     });
     canvas.addEventListener('mousemove', (e) => {
       this.mouseNdc = { x: (e.clientX / window.innerWidth) * 2 - 1, y: -(e.clientY / window.innerHeight) * 2 + 1 };
@@ -66,12 +83,14 @@ export class Input {
     });
     canvas.addEventListener('mousedown', (e) => {
       if (e.button === 0) this.mouseAttack = true;
-      if (e.button === 2) this.pressed.add('dodge');
+      if (e.button === 2) this.mouseHeavy = true;
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseAttack = false;
+      if (e.button === 2) this.mouseHeavy = false;
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    window.addEventListener('pointerdown', () => (this.anyPress = true));
   }
 
   setTouchMove(x: number, y: number) {
@@ -80,6 +99,9 @@ export class Input {
   }
   setTouchAttack(held: boolean) {
     this.touchAttack = held;
+  }
+  setTouchHeavy(held: boolean) {
+    this.touchHeavy = held;
   }
   press(a: Action) {
     this.pressed.add(a);
@@ -111,6 +133,7 @@ export class Input {
     y += this.touchMove.y;
 
     this.padAttack = false;
+    let padHeavy = false;
     this.padAim = null;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const pad of pads) {
@@ -126,11 +149,13 @@ export class Input {
       pad.buttons.forEach((b, i) => {
         if (b.pressed) this.usingGamepad = true;
         if (b.pressed && !this.padPrev[i]) {
+          this.anyPress = true;
           for (const [idx, a] of PAD_ACTIONS) if (idx === i) this.pressed.add(a);
         }
         this.padPrev[i] = b.pressed;
       });
-      if (pad.buttons[2]?.pressed || pad.buttons[1]?.pressed) this.padAttack = true;
+      if (pad.buttons[2]?.pressed) this.padAttack = true;
+      if (pad.buttons[3]?.pressed) padHeavy = true;
       break;
     }
 
@@ -139,8 +164,14 @@ export class Input {
       x /= len;
       y /= len;
     }
+    if (this.suppressed) {
+      x = y = 0;
+      this.pressed.clear();
+    }
     this.moveX = x;
     this.moveY = y;
     this.attackHeld = this.mouseAttack || this.keyAttack || this.touchAttack || this.padAttack || this.consume('attack');
+    this.heavyHeld = this.mouseHeavy || this.keyHeavy || this.touchHeavy || padHeavy;
+    if (this.suppressed) this.attackHeld = this.heavyHeld = false;
   }
 }
