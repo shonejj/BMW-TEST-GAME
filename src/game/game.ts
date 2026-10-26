@@ -10,7 +10,7 @@ import { Menus } from '../ui/menus';
 import { Debris } from '../world/debris';
 import { Level, type Breakable, type SpawnKind } from '../world/level';
 import { Rain } from '../world/weather';
-import { Boss, Enemy, EnemyOverlays, Spider } from './enemies';
+import { Boss, Enemy, EnemyOverlays, Ghoul, Spider, Weaver } from './enemies';
 import {
   BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
   type Inventory, type Item, type Slot,
@@ -135,6 +135,7 @@ export class Game {
     this.renderer.setQuality(this.settings.quality);
     this.camRig = new CameraRig(this.renderer.camera);
     this.input = new Input(this.renderer.renderer.domElement);
+    this.input.camYaw = this.camRig.yaw;
     this.hud = new Hud(container);
     const unlock = () => this.audio.unlock();
     this.controls = new Controls(container, this.input, this.touch, unlock);
@@ -186,7 +187,7 @@ export class Game {
   private prewarmShaders() {
     const hidden = new THREE.Vector3(0, -60, 0);
     for (const k of ['gale', 'fire', 'web', 'feather'] as const) this.projectile(k, hidden, 0, 0, 0, 0, 'enemy', 0);
-    const dummies = (['spiderling', 'armored', 'weaver', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    const dummies = (['spiderling', 'armored', 'weaver', 'ghoul', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
     this.vfx.prewarm(this.renderer.renderer, this.renderer.camera);
     for (const d of dummies) d.dispose();
     this.enemies = [];
@@ -535,7 +536,10 @@ export class Game {
   // -------------------------------------------------------------------------
 
   spawnEnemy(kind: SpawnKind, level: number, at: THREE.Vector3, elite = false, zone = -1): Enemy {
-    const e = kind === 'boss' ? new Boss(this, level, at) : new Spider(this, kind, level, at);
+    const e = kind === 'boss' ? new Boss(this, level, at)
+      : kind === 'ghoul' ? new Ghoul(this, level, at)
+        : kind === 'weaver' ? new Weaver(this, level, at)
+          : new Spider(this, kind, level, at);
     if (elite) e.makeElite();
     this.enemies.push(e);
     if (zone >= 0) this.zoneEnemies[zone].push(e);

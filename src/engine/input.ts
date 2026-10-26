@@ -35,6 +35,11 @@ export class Input {
   mouseNdc: { x: number; y: number } | null = null;
   /** Right-stick aim from a gamepad, screen space. */
   padAim: { x: number; y: number } | null = null;
+  /**
+   * Yaw of the camera around the player (radians). Stick/keys are screen-relative; moveX/moveY and
+   * padAim are reported in world X/Z so "up" always means "away from the camera".
+   */
+  camYaw = 0;
   usingGamepad = false;
   /** While true (cutscenes), gameplay input reads as idle. */
   suppressed = false;
@@ -145,7 +150,7 @@ export class Input {
         this.usingGamepad = true;
       }
       const rx = pad.axes[2] ?? 0, ry = pad.axes[3] ?? 0;
-      if (Math.hypot(rx, ry) > 0.35) this.padAim = { x: rx, y: ry };
+      if (Math.hypot(rx, ry) > 0.35) this.padAim = this.toWorld(rx, ry);
       pad.buttons.forEach((b, i) => {
         if (b.pressed) this.usingGamepad = true;
         if (b.pressed && !this.padPrev[i]) {
@@ -168,10 +173,17 @@ export class Input {
       x = y = 0;
       this.pressed.clear();
     }
-    this.moveX = x;
-    this.moveY = y;
+    const w = this.toWorld(x, y);
+    this.moveX = w.x;
+    this.moveY = w.y;
     this.attackHeld = this.mouseAttack || this.keyAttack || this.touchAttack || this.padAttack || this.consume('attack');
     this.heavyHeld = this.mouseHeavy || this.keyHeavy || this.touchHeavy || padHeavy;
     if (this.suppressed) this.attackHeld = this.heavyHeld = false;
+  }
+
+  /** Screen-space (x right, y down) to world X/Z for the current camera yaw. */
+  toWorld(x: number, y: number) {
+    const c = Math.cos(this.camYaw), sn = Math.sin(this.camYaw);
+    return { x: x * c + y * sn, y: -x * sn + y * c };
   }
 }

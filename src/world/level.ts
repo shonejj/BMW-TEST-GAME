@@ -3,9 +3,10 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { clamp, noise2, seeded } from '../engine/util';
 import { makeBlob } from '../game/vfx';
 import { flagstoneTexture, groundDetailTexture, mistTexture } from './textures';
+import { focusUniform, propParts, windUniform } from './nature';
 import {
-  balustrade, bambooGeometry, breakable, brokenPillar, colored, fernGeometry, grassGeometry, guardianStatue,
-  pavilion, pineGeometry, rockGeometry, sealBarrier, stoneLantern, templeHall, vcMaterial, vcMaterialDouble,
+  balustrade, breakable, brokenPillar, colored, guardianStatue,
+  pavilion, pineGeometry, rockGeometry, sealBarrier, stoneLantern, templeHall, vcMaterial,
   type BreakableDef, type BreakableKind, type PropResult,
 } from './props';
 
@@ -35,7 +36,7 @@ export interface Gate {
   fade: number;
 }
 
-export type SpawnKind = 'spiderling' | 'armored' | 'weaver' | 'boss';
+export type SpawnKind = 'spiderling' | 'armored' | 'weaver' | 'ghoul' | 'boss';
 export interface WaveDef { kinds: [SpawnKind, number][]; elite?: boolean }
 export interface ZoneDef {
   name: string;
@@ -86,31 +87,31 @@ export class Level {
       {
         name: 'Forest Clearing', checkpoint: new THREE.Vector3(0, 0, 5), triggerZ: -12, level: 1,
         area: { x0: -10, x1: 10, z0: -35, z1: -8 },
-        waves: [{ kinds: [['spiderling', 6]] }, { kinds: [['spiderling', 5], ['weaver', 1]] }],
+        waves: [{ kinds: [['ghoul', 3], ['spiderling', 3]] }, { kinds: [['spiderling', 4], ['ghoul', 2], ['weaver', 1]] }],
         opensGate: 0,
       },
       {
         name: 'Temple Courtyard', checkpoint: new THREE.Vector3(0, 0, -41), triggerZ: -50, level: 2,
         area: { x0: -13, x1: 13, z0: -79, z1: -47 },
         waves: [
-          { kinds: [['spiderling', 8], ['weaver', 1]] },
+          { kinds: [['ghoul', 4], ['spiderling', 4], ['weaver', 1]] },
           { kinds: [['armored', 1], ['spiderling', 6]], elite: true },
-          { kinds: [['spiderling', 8], ['weaver', 2]] },
+          { kinds: [['ghoul', 4], ['spiderling', 4], ['weaver', 2]] },
         ],
         opensGate: 1,
       },
       {
         name: 'Stone Stairs', checkpoint: new THREE.Vector3(0, 0, -78), triggerZ: -86, level: 3,
         area: { x0: -5, x1: 5, z0: -101, z1: -88 },
-        waves: [{ kinds: [['spiderling', 9]] }, { kinds: [['armored', 1], ['spiderling', 4]] }],
+        waves: [{ kinds: [['ghoul', 5], ['spiderling', 4]] }, { kinds: [['armored', 1], ['ghoul', 3]] }],
       },
       {
         name: 'Upper Plaza', checkpoint: new THREE.Vector3(0, 5, -101), triggerZ: -105, level: 4,
         area: { x0: -15, x1: 15, z0: -121, z1: -104 },
         waves: [
-          { kinds: [['spiderling', 12], ['weaver', 2]] },
+          { kinds: [['ghoul', 6], ['spiderling', 6], ['weaver', 2]] },
           { kinds: [['armored', 2], ['spiderling', 6]] },
-          { kinds: [['spiderling', 10], ['weaver', 2], ['armored', 1]], elite: true },
+          { kinds: [['ghoul', 5], ['spiderling', 5], ['weaver', 2], ['armored', 1]], elite: true },
         ],
         opensGate: 2,
       },
@@ -232,7 +233,7 @@ export class Level {
   }
 
   private buildLights() {
-    const hemi = new THREE.HemisphereLight(0x8fb0b4, 0x2b3322, 1.6);
+    const hemi = new THREE.HemisphereLight(0x9ab8bc, 0x34402a, 2.0);
     const moon = new THREE.DirectionalLight(0xd2dce6, 1.9);
     moon.position.set(-8, 16, 6);
     if (this.quality === 'high') {
@@ -284,7 +285,7 @@ export class Level {
     geo.translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
     const pos = geo.getAttribute('position');
     const colors = new Float32Array(pos.count * 3);
-    const grass = new THREE.Color(0x2c3f22), moss = new THREE.Color(0x203020), dirt = new THREE.Color(0x4a3f30), dark = new THREE.Color(0x182218);
+    const grass = new THREE.Color(0x3f5c2a), moss = new THREE.Color(0x32502a), dirt = new THREE.Color(0x5a4a34), dark = new THREE.Color(0x203420);
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), z = pos.getZ(i);
@@ -294,8 +295,8 @@ export class Level {
       const fd = this.flatDistance(x, z);
       if (fd === 0) {
         // Dirt path through the clearing, mossy elsewhere.
-        const path = clamp(1 - Math.abs(x + Math.sin(z * 0.15) * 2) / 6, 0, 1);
-        c.copy(grass).lerp(dirt, clamp(path + n * 0.4 - 0.15, 0, 1));
+        const path = clamp(1 - Math.abs(x + Math.sin(z * 0.15) * 2) / 3.5, 0, 1);
+        c.copy(grass).lerp(dirt, clamp(path * 1.2 + n * 0.3 - 0.2, 0, 1)).multiplyScalar(0.9 + 0.2 * noise2(x * 1.3, z * 1.3));
       } else {
         c.copy(moss).lerp(dark, clamp(fd / 8 + n * 0.3, 0, 1));
       }
@@ -456,12 +457,12 @@ export class Level {
   }
 
   /** Builds instanced meshes bucketed into chunks along Z so frustum culling still works. */
-  private instanced(geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[], colors?: THREE.Color[]) {
+  private instanced(geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[], colors?: THREE.Color[], castShadow = false, chunk = 24) {
     const buckets = new Map<number, number[]>();
     const p = new THREE.Vector3();
     list.forEach((m, i) => {
       p.setFromMatrixPosition(m);
-      const k = Math.floor(p.z / 24) * 10 + Math.floor(p.x / 40);
+      const k = Math.floor(p.z / chunk) * 100 + Math.floor(p.x / chunk);
       if (!buckets.has(k)) buckets.set(k, []);
       buckets.get(k)!.push(i);
     });
@@ -473,45 +474,79 @@ export class Level {
       });
       im.instanceMatrix.needsUpdate = true;
       im.computeBoundingSphere();
+      im.castShadow = castShadow;
       this.group.add(im);
     }
   }
 
+  /**
+   * Lush scatter from the nature kit. Tall props dissolve when they come between the camera and the
+   * player (see nature.ts), so the forest can crowd right up to the paths.
+   */
   private buildFoliage(density: number) {
-    const pines: THREE.Matrix4[] = [], bamboo: THREE.Matrix4[] = [], ferns: THREE.Matrix4[] = [], grass: THREE.Matrix4[] = [], rocks: THREE.Matrix4[] = [];
-    const { x0, x1 } = { x0: -46, x1: 46 };
-    for (let z = 24; z > -172; z -= 1.6) {
-      for (let x = x0; x < x1; x += 1.6) {
-        const jx = x + (this.rng() - 0.5) * 1.5, jz = z + (this.rng() - 0.5) * 1.5;
+    const buckets = new Map<string, THREE.Matrix4[]>();
+    const add = (name: string, x: number, y: number, z: number, s: number, rot = this.rng() * 6.28) => {
+      if (!buckets.has(name)) buckets.set(name, []);
+      buckets.get(name)!.push(this.mat4(x, y, z, s, rot));
+    };
+    const far: THREE.Matrix4[] = [];
+    const pick = <T,>(a: T[]) => a[Math.floor(this.rng() * a.length)];
+    // A small palette keeps draw calls down: every kind costs a call per chunk it appears in.
+    const forestTrees = ['CommonTree_3', 'CommonTree_3', 'Pine_1', 'Pine_1', 'CommonTree_5', 'Pine_1', 'TwistedTree_1'];
+    const templeTrees = ['Pine_1', 'TwistedTree_1', 'CommonTree_3', 'Pine_1', 'DeadTree_2', 'CommonTree_5'];
+    const tree = (forest: boolean, x: number, z: number, y: number) => {
+      const kind = pick(forest ? forestTrees : templeTrees);
+      const twisted = kind.startsWith('Twisted');
+      add(kind, x, y - 0.15, z, (twisted ? 0.42 : 0.85) + this.rng() * (twisted ? 0.18 : 0.45));
+    };
+    const keepClear = (x: number, z: number) =>
+      Math.abs(x) < 3.2 || this.zones.some((zn) => Math.hypot(zn.checkpoint.x - x, zn.checkpoint.z - z) < 5);
+    for (let z = 26; z > -176; z -= 1.5) {
+      for (let x = -48; x < 48; x += 1.5) {
+        const jx = x + (this.rng() - 0.5) * 1.4, jz = z + (this.rng() - 0.5) * 1.4;
         const fd = this.flatDistance(jx, jz);
         const y = this.terrainHeight(jx, jz);
         const r = this.rng();
-        // Trees only where they won't hide the walkable area from the camera.
-        const occludes = this.flatDistance(jx, jz - 2.5) < 1 || this.flatDistance(jx, jz - 5) < 1;
-        if (fd > 3 && !occludes) {
-          if (r < 0.2 * density) {
-            const s = 1 + this.rng() * 0.9;
-            if (this.rng() < 0.2) bamboo.push(this.mat4(jx, y, jz, s * 0.9, this.rng() * 6));
-            else pines.push(this.mat4(jx, y - 0.2, jz, s, this.rng() * 6));
-          } else if (r < 0.45 * density) ferns.push(this.mat4(jx, y, jz, 1 + this.rng(), this.rng() * 6));
-          else if (r < 0.5) rocks.push(this.mat4(jx, y - 0.2, jz, 0.5 + this.rng() * 1.2, this.rng() * 6));
-        } else if (fd > 0.3) {
-          if (r < 0.5 * density) ferns.push(this.mat4(jx, y, jz, 0.8 + this.rng() * 0.8, this.rng() * 6));
-          else if (r < 0.7 * density) grass.push(this.mat4(jx, y, jz, 1 + this.rng(), this.rng() * 6));
-        } else if (jz > -40 && r < 0.12 * density) {
-          // Low grass inside the clearing (no collision).
-          if (this.isWalkable(jx, jz, 0)) grass.push(this.mat4(jx, y, jz, 0.8 + this.rng() * 0.6, this.rng() * 6));
-        } else if (jz <= -44 && r < 0.05) {
-          // Rubble and weeds between flagstones
-          rocks.push(this.mat4(jx, this.heightAt(jx, jz) + 0.05, jz, 0.12 + this.rng() * 0.15, this.rng() * 6));
+        const forest = jz > -44;
+        if (fd > 14) {
+          if (r < 0.1 * density) far.push(this.mat4(jx, y - 0.2, jz, 1.4 + this.rng() * 1.2, this.rng() * 6));
+          continue;
+        }
+        if (fd > 2.6 && r < 0.1 * density) {
+          tree(forest, jx, jz, y);
+          if (this.rng() < 0.35) add(pick(['Mushroom_Common', 'Fern_1', 'Rock_Medium_1']), jx + 1, this.terrainHeight(jx + 1, jz + 0.6), jz + 0.6, 0.5 + this.rng() * 0.4);
+        } else if (fd > 1.2 && fd < 10 && r < 0.32 * density) {
+          add(pick(['Bush_Common', 'Bush_Large', 'Bush_Common', 'Fern_1', 'Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.05, jz, 0.6 + this.rng() * 0.6);
+        } else if (fd > 0.25 && fd < 7 && r < 0.8 * density) {
+          add(pick(['Fern_1', 'Fern_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Clover_1', 'Grass_Common_Short']), jx, y, jz, 0.55 + this.rng() * 0.5);
+        } else if (fd <= 0.25 && forest) {
+          // Inside the clearing: a few solid features to fight around, and a carpet of low growth.
+          if (r < 0.03 && this.isWalkable(jx, jz, 2) && !keepClear(jx, jz)) {
+            const s = 0.55 + this.rng() * 0.35;
+            const kind = this.rng();
+            if (kind < 0.3) { tree(true, jx, jz, y); this.obstacles.push({ x: jx, z: jz, r: 0.7 }); }
+            else if (kind < 0.65) { add(pick(['Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.2, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.25 * s }); }
+            else { add('Bush_Large', jx, y - 0.1, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.3 * s }); }
+          } else if (r < 0.5 * density && this.isWalkable(jx, jz, 0)) {
+            add(pick(['Grass_Common_Short', 'Grass_Common_Short', 'Clover_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Pebble_Round_1']), jx, y, jz, 0.4 + this.rng() * 0.35);
+          }
+        } else if (fd <= 0.25 && r < 0.04 * density) {
+          // Weeds and pebbles between flagstones.
+          add(pick(['Grass_Common_Short', 'Pebble_Round_1', 'Clover_1']), jx, this.heightAt(jx, jz) + 0.02, jz, 0.35 + this.rng() * 0.3);
         }
       }
     }
-    this.instanced(pineGeometry(), vcMaterial, pines);
-    this.instanced(bambooGeometry(), vcMaterial, bamboo);
-    this.instanced(fernGeometry(), vcMaterialDouble, ferns);
-    this.instanced(grassGeometry(), vcMaterial, grass);
-    this.instanced(rockGeometry(5), vcMaterial, rocks);
+    const shadows = this.quality === 'high';
+    for (const [name, list] of buckets) {
+      const tall = /Tree|Pine/.test(name);
+      const big = tall || /Bush_Large|Rock_Medium/.test(name);
+      for (const part of propParts(name, tall ? 0.012 : 0.05, big)) {
+        // Trees are expensive per instance, so cull them finely; ground cover goes in big chunks.
+        this.instanced(part.geometry, part.material, list.map((m) => m.clone().multiply(part.matrix)), undefined, shadows && tall, tall ? 20 : 36);
+      }
+    }
+    // Distant silhouettes past the playable band: cheap low-poly pines lost in the fog.
+    this.instanced(pineGeometry(), vcMaterial, far);
   }
 
   private addBreakable(kind: BreakableKind, x: number, z: number) {
@@ -608,8 +643,10 @@ export class Level {
   }
 
   update(dt: number, time: number, focus?: THREE.Vector3) {
+    windUniform.value = time;
+    if (focus) focusUniform.value.copy(focus);
     for (const [i, m] of this.mist.entries()) {
-      if (focus) m.position.set(focus.x, this.heightAt(0, focus.z) + (i ? 1.8 : 0.6), focus.z - 6);
+      if (focus) m.position.set(focus.x - 4, this.heightAt(0, focus.z) + (i ? 1.8 : 0.6), focus.z - 4);
       const map = (m.material as THREE.MeshBasicMaterial).map!;
       map.offset.set((time * (0.004 + i * 0.003) + m.position.x / 140) % 1, (time * 0.002 - m.position.z / 140) % 1);
     }

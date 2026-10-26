@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { clamp, damp } from './util';
 
-/** Fixed-yaw, high three-quarter camera that follows the player (Diablo-style). */
+/**
+ * Fixed diagonal three-quarter camera that follows the player (Hades/Diablo-style): yawed 45° so the
+ * action reads from the side as well as above, close enough to see the animation.
+ */
 export class CameraRig {
   readonly target = new THREE.Vector3();
   zoom = 1;
@@ -13,7 +16,15 @@ export class CameraRig {
   private shakeT = 0;
   private readonly lead = new THREE.Vector3();
   private readonly leadTarget = new THREE.Vector3();
-  private readonly offset = new THREE.Vector3(0, 15, 10.8);
+  /** Camera yaw around the focus; the input layer uses it to make movement screen-relative. */
+  readonly yaw = Math.PI / 4;
+  readonly pitch = 0.78;
+  readonly distance = 13.5;
+  private readonly offset = new THREE.Vector3(
+    Math.sin(this.yaw) * Math.cos(this.pitch) * this.distance,
+    Math.sin(this.pitch) * this.distance,
+    Math.cos(this.yaw) * Math.cos(this.pitch) * this.distance,
+  );
   private readonly tmp = new THREE.Vector3();
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
@@ -51,7 +62,7 @@ export class CameraRig {
     const portrait = this.camera.aspect < 1 ? 1.15 : 1;
     this.tmp.copy(this.offset).multiplyScalar(this.zoom * portrait);
     this.camera.position.copy(this.target).add(this.tmp);
-    this.camera.lookAt(this.target.x, this.target.y + 0.8, this.target.z - 0.5);
+    this.camera.lookAt(this.target.x, this.target.y + 0.9, this.target.z);
 
     // Smooth, self-ending shake on the camera only (never the simulated player).
     if (this.trauma > 0) {

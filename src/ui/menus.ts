@@ -20,7 +20,8 @@ const TABS: [Tab, string][] = [
 const LORE: Record<string, string> = {
   spiderling: 'Hatchlings of the temple brood. Alone they are a nuisance; in the dark they come by the dozen.',
   armored: 'Broodmothers grow shells of temple stone. Watch for the red circle — they leap before they bite.',
-  weaver: 'Once pilgrims, now bound to the brood. They keep their distance and spit binding silk.',
+  ghoul: 'The temple monks who never fled. The brood\'s venom keeps them walking long after death; they rise from the soil and rake with broken nails.',
+  weaver: 'Once pilgrims, now spider-women bound to the brood. They keep their distance, circle, and spit binding silk.',
   boss: 'A yaoguai lord who nested in the Mountain-Sea Temple after the monks fled. His jade miasma rots stone and flesh alike.',
 };
 

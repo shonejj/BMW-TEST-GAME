@@ -1,10 +1,14 @@
 import * as THREE from 'three';
 import { approachAngle, clamp, damp, lerp, rand, wrapAngle, yawOf } from '../engine/util';
-import { buildBoss, buildSpider, type BossRig, type SpiderKind, type SpiderRig } from './models';
+import { buildSpider, type SpiderKind, type SpiderRig } from './models';
+import { Animator, type Locomotion } from './animator';
+import type { Character } from './characters';
+import { buildCrowLord, buildMonk, buildWeaver, type CrowRig, type WeaverRig } from './outfits';
 import { COLORS } from './vfx';
 import type { Game } from './game';
 
-export type EnemyKind = SpiderKind | 'boss';
+export type EnemyKind = SpiderKind | 'ghoul' | 'boss';
+type FlashMat = THREE.Material & { emissive: THREE.Color; emissiveIntensity: number };
 const BLACK = new THREE.Color(0);
 
 interface KindDef {
@@ -21,6 +25,7 @@ interface KindDef {
 export const KINDS: Record<EnemyKind, KindDef> = {
   spiderling: { name: 'Spiderling', hp: 42, speed: 5.2, radius: 0.55, dmg: 8, xp: 9, gold: [1, 5], dropChance: 0.1 },
   armored: { name: 'Armored Broodmother', hp: 300, speed: 2.7, radius: 1.2, dmg: 22, xp: 55, gold: [10, 30], dropChance: 0.6 },
+  ghoul: { name: 'Undead Monk', hp: 80, speed: 3.1, radius: 0.55, dmg: 13, xp: 16, gold: [2, 8], dropChance: 0.18 },
   weaver: { name: 'Web Weaver', hp: 95, speed: 3.6, radius: 0.75, dmg: 12, xp: 24, gold: [4, 12], dropChance: 0.35 },
   boss: { name: 'Blackfeather Lord', hp: 3600, speed: 3.4, radius: 1.6, dmg: 30, xp: 600, gold: [300, 500], dropChance: 1 },
 };
@@ -130,7 +135,7 @@ export abstract class Enemy {
   protected dotTick = 0;
   shadowVisible = true;
   barVisible = false;
-  protected flashMats: THREE.MeshLambertMaterial[] = [];
+  protected flashMats: FlashMat[] = [];
 
   constructor(protected readonly game: Game, readonly kind: EnemyKind, level: number, at: THREE.Vector3) {
     this.def = KINDS[kind];
@@ -282,12 +287,12 @@ export abstract class Enemy {
     const p = this.game.player.pos;
     return yawOf(p.x - this.pos.x, p.z - this.pos.z);
   }
-  protected registerFlashMats(mats: THREE.MeshLambertMaterial[]) {
+  protected registerFlashMats(mats: FlashMat[]) {
     // Clone materials so each enemy can flash independently.
-    const map = new Map<THREE.Material, THREE.MeshLambertMaterial>();
+    const map = new Map<THREE.Material, FlashMat>();
     for (const m of mats) {
       // Materials built per instance (e.g. spiders with shader-animated legs) are used as-is.
-      const c = m.userData.unique ? m : m.clone();
+      const c = m.userData.unique ? m : (m.clone() as FlashMat);
       c.userData.baseEmissive = m.emissive.clone().multiplyScalar(m.emissiveIntensity);
       c.emissiveIntensity = 1;
       map.set(m, c);
@@ -505,14 +510,253 @@ export class Spider extends Enemy {
 }
 
 // ---------------------------------------------------------------------------
-// Boss
+// Humanoids on the motion-captured rig
+// ---------------------------------------------------------------------------
+
+interface Clip { clip: string; from: number; to: number; hit: number }
+const clipWin = (clip: string, from: number, to: number, hit = to): Clip => ({ clip, from, to, hit });
+
+abstract class Humanoid extends Enemy {
+  protected readonly anim: Animator;
+  /** Scaled holder for the mannequin; lifted for leaps. */
+  protected readonly lift = new THREE.Group();
+  protected speedNow = 0;
+  protected hitPose = clipWin('hit', 0, 0.33);
+
+  constructor(game: Game, kind: EnemyKind, level: number, at: THREE.Vector3, protected readonly ch: Character, loco: Locomotion, scale: number) {
+    super(game, kind, level, at);
+    this.lift.scale.setScalar(scale);
+    this.lift.add(ch.model);
+    this.root.add(this.lift);
+    const m = ch.mats;
+    for (const mat of [m.matte, m.cloth, m.metal]) mat.userData.unique = true;
+    this.registerFlashMats([m.matte, m.cloth, m.metal]);
+    this.anim = new Animator(ch.model, loco);
+    // Settle into the idle pose now: enemies spawned during a cutscene don't update until it ends.
+    this.anim.update(0, 0);
+  }
+
+  /** Shows a clip window at fraction k. */
+  protected play(c: Clip, k: number, fade = 0.1) {
+    this.anim.pose(c.clip, c.from + clamp(k, 0, 1) * (c.to - c.from), fade);
+  }
+
+  update(dt: number) {
+    super.update(dt);
+    if (this.removed) return;
+    // Stagger and immobilize skip think(): show a flinch (or a frozen pose) instead of the base wobble.
+    if (this.alive && (this.staggerT > 0 || this.stunT > 0)) {
+      this.root.rotation.x = 0;
+      if (this.staggerT > 0) this.play(this.hitPose, 1 - this.staggerT / 0.7, 0.06);
+      this.anim.update(this.stunT > 0 ? 0 : dt, 0);
+    }
+  }
+
+  protected step(dt: number) {
+    this.anim.update(dt, this.speedNow);
+  }
+
+  protected walk(dt: number, dirX: number, dirZ: number, want: number) {
+    if (want > 0) {
+      const sp = want * (this.poison > 0 ? 0.8 : 1);
+      if (!this.game.level.move(this.pos, dirX * sp * dt, dirZ * sp * dt, this.radius)) {
+        this.game.level.move(this.pos, dirZ * sp * dt, -dirX * sp * dt, this.radius);
+      }
+    }
+    this.speedNow = lerp(this.speedNow, want, damp(10, dt));
+  }
+
+  protected deathClip = clipWin('death2', 0, 2.45);
+
+  protected animateDeath(dt: number) {
+    this.play(this.deathClip, this.deadTime / 1.3, 0.1);
+    this.anim.update(dt, 0);
+    if (this.deadTime > 1.5) this.root.position.y -= dt * 0.6;
+    this.shadowVisible = this.deadTime < 1.3;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Undead monk: rises from the earth, shambles in and rakes with its claws
+// ---------------------------------------------------------------------------
+
+const MONK_ATTACKS = [clipWin('zScratch', 0.05, 1.6, 0.61), clipWin('zBite', 0.0, 1.3, 0.39)];
+const MONK_SPAWN = clipWin('zSpawn', 0.0, 2.8);
+let monkVariant = 0;
+
+export class Ghoul extends Humanoid {
+  private state: 'spawn' | 'chase' | 'attack' | 'recover' = 'spawn';
+  private attack = MONK_ATTACKS[0];
+  private attackHit = false;
+  private tele: { cancel: () => void } | null = null;
+  private readonly rate = rand(1.15, 1.35);
+
+  constructor(game: Game, level: number, at: THREE.Vector3) {
+    super(game, 'ghoul', level, at, buildMonk(monkVariant++), { idle: 'zIdle', moves: [{ name: 'zWalk', speed: 1.3 }, { name: 'zRun', speed: 3.4 }] }, rand(0.95, 1.05));
+    game.vfx.dustBurst(at, 10, 0.8);
+  }
+
+  barHeight() { return 2.2; }
+
+  protected interrupt() {
+    this.tele?.cancel();
+    this.tele = null;
+    if (this.state !== 'spawn') this.setState('recover');
+  }
+
+  private setState(s: Ghoul['state']) {
+    this.state = s;
+    this.st = 0;
+    this.attackHit = false;
+  }
+
+  protected think(dt: number) {
+    const player = this.game.player;
+    const d = this.distToPlayer();
+    const toYaw = this.faceYaw();
+    let want = 0;
+    switch (this.state) {
+      case 'spawn':
+        this.yaw = toYaw;
+        this.play(MONK_SPAWN, this.st / 1.7, 0);
+        if (this.st >= 1.7) this.setState('chase');
+        break;
+      case 'chase':
+        this.anim.release(0.2);
+        if (!player.alive) break;
+        this.yaw = approachAngle(this.yaw, toYaw, dt * 6);
+        want = d > 1.6 ? this.def.speed : 0;
+        if (d < 2.1 + player.radius) {
+          this.attack = MONK_ATTACKS[Math.random() < 0.65 ? 0 : 1];
+          this.setState('attack');
+          const lead = (this.attack.hit - this.attack.from) / this.rate;
+          this.tele = this.game.vfx.telegraph(this.pos, 2.2, lead + 0.05, { yaw: this.yaw, halfAngle: 0.8 });
+        }
+        break;
+      case 'attack': {
+        const a = this.attack;
+        const dur = (a.to - a.from) / this.rate;
+        const k = this.st / dur;
+        const hitK = (a.hit - a.from) / (a.to - a.from);
+        if (k < hitK) this.yaw = approachAngle(this.yaw, toYaw, dt * 3);
+        this.play(a, k, 0.08);
+        if (k < hitK + 0.05) { this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), k > hitK - 0.15 ? 3.5 : 0); want = -1; }
+        if (!this.attackHit && k >= hitK) {
+          this.attackHit = true;
+          this.tele = null;
+          const da = Math.abs(wrapAngle(toYaw - this.yaw));
+          if (d < 2.2 + player.radius && da < 1.1) player.hurt(this.dmg, this.pos);
+          this.game.audio.play('bite');
+        }
+        if (k >= 0.82) this.setState('recover');
+        break;
+      }
+      case 'recover':
+        if (this.st >= 0.35) this.setState('chase');
+        break;
+    }
+    if (want >= 0) this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), want);
+    this.step(dt);
+  }
+
+  protected onDeath() {
+    this.tele?.cancel();
+    this.game.audio.play('skitter');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Web Weaver: keeps her distance, circles, and spits webs
+// ---------------------------------------------------------------------------
+
+const WEAVER_CAST = clipWin('cast', 0.0, 0.5, 0.25);
+
+export class Weaver extends Humanoid {
+  private state: 'spawn' | 'chase' | 'shoot' | 'recover' = 'spawn';
+  private shootCd = rand(1, 2.5);
+  private strafe = Math.random() < 0.5 ? 1 : -1;
+  private shot = false;
+  private readonly rig: WeaverRig;
+
+  constructor(game: Game, level: number, at: THREE.Vector3) {
+    const rig = buildWeaver();
+    super(game, 'weaver', level, at, rig.character, { idle: 'idle', moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }] }, 1.02);
+    this.rig = rig;
+    game.vfx.dustBurst(at, 8, 0.8);
+  }
+
+  barHeight() { return 2.3; }
+
+  protected interrupt() {
+    if (this.state !== 'spawn') { this.state = 'recover'; this.st = 0; }
+  }
+
+  protected think(dt: number) {
+    const d = this.distToPlayer();
+    const toYaw = this.faceYaw();
+    let dirX = 0, dirZ = 0, want = 0;
+    switch (this.state) {
+      case 'spawn':
+        this.yaw = toYaw;
+        if (this.st > 0.6) { this.state = 'chase'; this.st = 0; }
+        break;
+      case 'chase': {
+        this.anim.release(0.2);
+        this.shootCd -= dt;
+        this.yaw = approachAngle(this.yaw, toYaw, dt * 6);
+        if (d < 5) { dirX = -Math.sin(toYaw); dirZ = -Math.cos(toYaw); want = this.def.speed * 0.9; }
+        else if (d > 10) { dirX = Math.sin(toYaw); dirZ = Math.cos(toYaw); want = this.def.speed; }
+        else {
+          dirX = Math.cos(toYaw) * this.strafe; dirZ = -Math.sin(toYaw) * this.strafe; want = this.def.speed * 0.6;
+          if (Math.random() < dt * 0.3) this.strafe *= -1;
+        }
+        // Face where she walks so the stride matches; turn back to the player to shoot.
+        if (want > 0) this.yaw = approachAngle(this.yaw, yawOf(dirX, dirZ), dt * 8);
+        if (this.shootCd <= 0 && d < 12 && this.game.player.alive) { this.state = 'shoot'; this.st = 0; this.shot = false; }
+        break;
+      }
+      case 'shoot':
+        this.yaw = approachAngle(this.yaw, toYaw, dt * 10);
+        this.play(WEAVER_CAST, this.st / 0.8, 0.08);
+        if (!this.shot && this.st >= 0.4) {
+          this.shot = true;
+          this.shootCd = rand(2, 3);
+          this.game.spawnWeb(this.pos, this.yaw, this.dmg);
+        }
+        if (this.st >= 0.8) { this.state = 'chase'; this.st = 0; }
+        break;
+      case 'recover':
+        if (this.st >= 0.5) { this.state = 'chase'; this.st = 0; }
+        break;
+    }
+    this.walk(dt, dirX, dirZ, want);
+    // Spider legs creep and twitch; they flare open when she casts.
+    const t = this.game.time;
+    const open = this.state === 'shoot' ? 0.35 : 0;
+    this.rig.legs.forEach((l, i) => {
+      const b = l.userData.base as THREE.Euler;
+      l.rotation.x = b.x + Math.sin(t * (3 + this.speedNow) + i * 1.3) * 0.18 - open;
+      l.rotation.y = b.y + Math.sin(t * 2 + i) * 0.08;
+    });
+    this.step(dt);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boss: the Blackfeather Lord
 // ---------------------------------------------------------------------------
 
 type BossState = 'intro' | 'chase' | 'sweep' | 'leap' | 'miasma' | 'summon' | 'barrage' | 'recover';
 
-export class Boss extends Enemy {
+const BOSS_SWEEP = clipWin('heavyA', 0.0, 0.73, 0.47);
+const BOSS_POUND = clipWin('groundPound', 0.0, 1.0, 0.3);
+const BOSS_ROAR = clipWin('transform', 0.0, 2.1);
+const BOSS_THROW = clipWin('throw', 0.0, 1.33, 0.62);
+const BOSS_BROKEN = clipWin('knockback', 0.0, 0.83);
+
+export class Boss extends Humanoid {
   readonly isBoss = true;
-  readonly rig: BossRig;
+  readonly rig: CrowRig;
   private state: BossState = 'intro';
   private cds = { sweep: 0, leap: 3, miasma: 6, barrage: 4 };
   private summoned = [false, false];
@@ -524,11 +768,12 @@ export class Boss extends Enemy {
   private enraged = false;
 
   constructor(game: Game, level: number, at: THREE.Vector3) {
-    super(game, 'boss', level, at);
-    this.rig = buildBoss();
-    this.root.add(this.rig.root);
-    this.registerFlashMats(this.rig.flashMats);
-    this.rig.root.position.y = 12;
+    const rig = buildCrowLord();
+    super(game, 'boss', level, at, rig.character, { idle: 'swordIdle', moves: [{ name: 'walk', speed: 3.0 }, { name: 'jog', speed: 7.2 }] }, 2.0);
+    this.rig = rig;
+    this.hitPose = BOSS_BROKEN;
+    this.deathClip = clipWin('death', 0, 2.35);
+    this.lift.position.y = 12;
     this.yaw = 0;
   }
 
@@ -550,7 +795,7 @@ export class Boss extends Enemy {
   }
 
   protected interrupt() {
-    this.rig.root.position.y = 0;
+    this.lift.position.y = 0;
     if (this.state !== 'intro') this.setState('recover');
   }
 
@@ -569,7 +814,7 @@ export class Boss extends Enemy {
 
     if (this.phase2 && !this.enraged) {
       this.enraged = true;
-      this.rig.eyeMat.color.setHex(0xaaff40);
+      this.ch.mats.glow.color.setHex(0xd8ff60);
       this.game.audio.play('roar');
       this.game.hud.toast('The Blackfeather Lord is enraged!', '#9cff6a');
       this.game.camRig.shake(0.5, 0.6);
@@ -585,7 +830,7 @@ export class Boss extends Enemy {
     switch (this.state) {
       case 'intro': {
         const k = clamp(this.st / 1.6, 0, 1);
-        this.rig.root.position.y = 12 * (1 - k) * (1 - k);
+        this.lift.position.y = 12 * (1 - k) * (1 - k);
         this.yaw = toYaw;
         if (k >= 1 && !this.didHit) {
           this.didHit = true;
@@ -628,10 +873,10 @@ export class Boss extends Enemy {
         const k = clamp((this.st - wind) / air, 0, 1);
         this.pos.x = lerp(this.leapFrom.x, this.leapTo.x, k);
         this.pos.z = lerp(this.leapFrom.z, this.leapTo.z, k);
-        this.rig.root.position.y = Math.sin(k * Math.PI) * 6;
+        this.lift.position.y = Math.sin(k * Math.PI) * 6;
         if (k >= 1 && !this.didHit) {
           this.didHit = true;
-          this.rig.root.position.y = 0;
+          this.lift.position.y = 0;
           if (Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z) < 4.2 + player.radius) player.hurt(this.dmg * 1.4, this.pos);
           this.game.vfx.shockwave(this.pos, 5, COLORS.jade, 0.5, 0.2);
           this.game.vfx.shockwave(this.pos, 3, COLORS.red, 0.35);
@@ -728,59 +973,69 @@ export class Boss extends Enemy {
     this.game.onBossDefeated(this);
   }
 
+  update(dt: number) {
+    super.update(dt);
+    // Broken poise: knocked flat for the whole stagger instead of a flinch.
+    if (this.alive && this.staggerT > 0) this.play(BOSS_BROKEN, 1 - this.staggerT / 1.8, 0.08);
+  }
+
   private animate(dt: number) {
-    const r = this.rig;
     const t = this.game.time;
-    this.flapPhase += dt * (this.state === 'leap' || this.state === 'intro' || this.state === 'barrage' ? 9 : 2.5);
-    const flap = Math.sin(this.flapPhase) * (this.state === 'barrage' ? 0.6 : 0.25);
-    r.wingL.rotation.y = 0.5 + flap;
-    r.wingR.rotation.y = -0.5 - flap;
-    r.wingL.rotation.z = -0.2;
-    r.wingR.rotation.z = 0.2;
-    let armR = -0.4, armRy = 0, torsoY = 0, torsoX = 0, spearX = -1.3, spearY = 0;
+    const wind = this.phase2 ? 0.65 : 0.85;
+    let moving = 0;
     switch (this.state) {
+      case 'intro':
+        // Falls in braced for the landing, then rises and roars.
+        if (this.st < 1.6) this.play(BOSS_POUND, 0.3, 0);
+        else this.play(BOSS_ROAR, (this.st - 1.6) / 1.0 * 0.6 + 0.2, 0.15);
+        break;
       case 'sweep': {
-        const wind = this.phase2 ? 0.65 : 0.85;
-        const p = this.st < wind ? this.st / wind : 1 + clamp((this.st - wind) / 0.2, 0, 1);
-        torsoY = p <= 1 ? 1.0 * p : lerp(1.0, -1.3, p - 1);
-        armR = -1.5; spearX = -0.1; spearY = 0;
+        const hitK = (BOSS_SWEEP.hit - BOSS_SWEEP.from) / (BOSS_SWEEP.to - BOSS_SWEEP.from);
+        const k = this.st < wind ? (this.st / wind) * hitK : hitK + ((this.st - wind) / 0.5) * (1 - hitK);
+        this.play(BOSS_SWEEP, k, 0.1);
         break;
       }
-      case 'leap':
-        armR = -2.6; spearX = -2.0; torsoX = -0.2;
+      case 'leap': {
+        const hitK = (BOSS_POUND.hit - BOSS_POUND.from) / (BOSS_POUND.to - BOSS_POUND.from);
+        const k = this.st < 0.5 ? 0.05 * (this.st / 0.5) : this.st < 1.25 ? 0.05 + ((this.st - 0.5) / 0.75) * (hitK - 0.05) : hitK + ((this.st - 1.25) / 0.7) * (1 - hitK);
+        this.play(BOSS_POUND, k, 0.1);
         break;
+      }
       case 'miasma':
+        this.anim.loop('channel', 1, 0.2);
+        this.ch.mats.glow.color.setHex(Math.floor(t * 10) % 2 ? 0x9dff9a : 0xffffff);
+        break;
       case 'summon':
-        armR = -2.9; spearX = -1.6; torsoX = -0.25;
-        r.eyeMat.color.setHex(Math.floor(t * 10) % 2 ? 0x5dff8a : 0xffffff);
+        this.play(BOSS_ROAR, this.st / 1.6, 0.15);
         break;
       case 'barrage':
-        torsoX = -0.3; armR = -1.0;
+        this.play(BOSS_THROW, this.st / 1.3, 0.1);
+        break;
+      case 'chase':
+        moving = this.distToPlayer() > 4 ? this.def.speed * (this.phase2 ? 1.25 : 1) : 0;
+        this.anim.release(0.25);
         break;
       default:
-        if (!this.enraged) r.eyeMat.color.setHex(0x5dff8a);
-        else r.eyeMat.color.setHex(0xaaff40);
+        this.anim.release(0.25);
     }
-    const k = damp(this.state === 'sweep' ? 20 : 8, dt);
-    r.armR.rotation.x += (armR - r.armR.rotation.x) * k;
-    r.armR.rotation.y += (armRy - r.armR.rotation.y) * k;
-    r.armL.rotation.x += (-0.3 + Math.sin(t * 1.5) * 0.1 - r.armL.rotation.x) * k;
-    r.torso.rotation.y += (torsoY - r.torso.rotation.y) * k;
-    r.torso.rotation.x += (torsoX - r.torso.rotation.x) * k;
-    r.spear.rotation.x += (spearX - r.spear.rotation.x) * k;
-    r.spear.rotation.y += (spearY - r.spear.rotation.y) * k;
-    r.body.position.y = Math.sin(t * 2) * 0.08;
-    r.head.rotation.y = Math.sin(t * 0.7) * 0.2;
+    if (this.state !== 'miasma') this.ch.mats.glow.color.setHex(this.enraged ? 0xd8ff60 : 0xffffff);
+    this.speedNow = lerp(this.speedNow, moving, damp(8, dt));
+    // Wings: slow breathing beats, fast flaps when airborne or casting.
+    this.flapPhase += dt * (this.state === 'leap' || this.state === 'intro' || this.state === 'barrage' ? 9 : 2.5);
+    const flap = Math.sin(this.flapPhase) * (this.state === 'barrage' || this.state === 'leap' ? 0.55 : 0.2);
+    this.rig.wingL.rotation.y = 0.45 + flap;
+    this.rig.wingR.rotation.y = -0.45 - flap;
+    this.step(dt);
     if (this.enraged && Math.random() < 0.3) {
       this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 3, this.pos.z, { count: 1, radius: 1.5, speed: [0, 0.5], up: [1, 3], gravity: -1, life: [0.5, 1], color: COLORS.jade, color2: COLORS.jadeHot, size: [0.3, 0.6] });
     }
   }
 
   protected animateDeath(dt: number) {
-    const r = this.rig;
-    r.body.rotation.x += (-1.4 - r.body.rotation.x) * damp(2, dt);
-    r.wingL.rotation.y += (1.4 - r.wingL.rotation.y) * damp(2, dt);
-    r.wingR.rotation.y += (-1.4 - r.wingR.rotation.y) * damp(2, dt);
+    this.play(this.deathClip, this.deadTime / 1.6, 0.15);
+    this.anim.update(dt, 0);
+    this.rig.wingL.rotation.y += (1.3 - this.rig.wingL.rotation.y) * damp(2, dt);
+    this.rig.wingR.rotation.y += (-1.3 - this.rig.wingR.rotation.y) * damp(2, dt);
     if (Math.random() < 0.5) this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 1.5, this.pos.z, { count: 3, radius: 2, speed: [0, 2], up: [2, 6], gravity: -1, life: [0.6, 1.2], color: COLORS.jade, color2: COLORS.jadeHot, size: [0.3, 0.6] });
     if (this.deadTime > 1.8) this.root.position.y -= dt * 1.5;
     this.deadTime = Math.min(this.deadTime, 2.1); // keep the corpse until the victory screen

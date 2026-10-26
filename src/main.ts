@@ -1,6 +1,7 @@
 import './style.css';
 import { loadFonts } from './ui/fonts';
 import { Game } from './game/game';
+import { loadAssets } from './game/assets';
 
 function showFatal(title: string, body: string) {
   const boot = document.getElementById('boot') ?? document.body.appendChild(document.createElement('div'));
@@ -35,16 +36,16 @@ loadFonts();
 if (!hasWebGL2()) {
   showFatal('3D graphics unavailable', WEBGL_HELP);
 } else {
-  try {
+  loadAssets().then(() => {
     const game = new Game(document.getElementById('app')!);
     game.boot();
     (window as unknown as { game: Game }).game = game;
-  } catch (e) {
+  }).catch((e) => {
     console.error(e);
     const msg = String((e as Error)?.message ?? e);
     if (/webgl/i.test(msg)) showFatal('3D graphics unavailable', WEBGL_HELP);
     else showFatal('Something went wrong', `<p>${msg.replace(/</g, '&lt;')}</p><button onclick="location.reload()">Reload</button>`);
-  }
+  });
 }
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
