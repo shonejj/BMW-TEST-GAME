@@ -7,7 +7,7 @@ import {
   SPELLS, SPELL_IDS, TALENTS, canLearn, pointsAvailable, rank, spellUnlocked, type Branch, type SpellId, type TalentId,
 } from '../game/progression';
 import { KINDS } from '../game/enemies';
-import { CHARACTER_ART, ICONS, SLOT_ICONS, STAT_ICONS } from './icons';
+import { ICONS, SLOT_ICONS, STAT_ICONS } from './icons';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -43,6 +43,8 @@ export class Menus {
   private back: (() => void) | null = null;
   private padPrev: boolean[] = [];
   private navRepeat = 0;
+  /** Title "press any button" stage. */
+  private splash = false;
 
   constructor(parent: HTMLElement, private readonly game: Game) {
     this.root = document.createElement('div');
@@ -161,6 +163,11 @@ export class Menus {
     if (pad.buttons.some((b) => b.pressed) || Math.abs(pad.axes[0]) > 0.5 || Math.abs(pad.axes[1]) > 0.5) document.body.classList.add('using-pad');
     const pressed = (i: number) => !!pad.buttons[i]?.pressed;
     const edge = (i: number) => pressed(i) && !this.padPrev[i];
+    if (this.splash && this.current === 'start') {
+      if (pad.buttons.some((b, i) => b.pressed && !this.padPrev[i])) this.beginSplash?.();
+      pad.buttons.forEach((b, i) => (this.padPrev[i] = b.pressed));
+      return;
+    }
     let dx = 0, dy = 0;
     if (pressed(12) || pad.axes[1] < -0.5) dy = -1;
     else if (pressed(13) || pad.axes[1] > 0.5) dy = 1;
@@ -182,25 +189,78 @@ export class Menus {
   // Title, help, confirm
   // -------------------------------------------------------------------------
 
-  showStart(hasSave: boolean) {
-    const s = this.show('start', 'start', `
-      <div class="logo">
-        <div class="logo-small">Chapter One</div>
-        <div class="logo-big">Monkey King</div>
-        <div class="logo-sub">Mountain-Sea Temple</div>
+  /**
+   * Title: an in-engine shot of the hero (see Game.titleShot) behind a brushed wordmark. First a "press any
+   * button" splash, then a left-aligned text menu with an ink-stroke highlight on the focused entry.
+   */
+  showStart(hasSave: boolean, skipSplash = false) {
+    this.splash = !skipSplash;
+    const s = this.show('start', 'start ' + (this.splash ? 'splash' : 'ready'), `
+      <div class="title-shade"></div>
+      <div class="title-block">
+        <div class="t-kicker"><i></i>Chapter One<i></i></div>
+        <div class="t-word">
+          <svg class="t-ink" viewBox="0 0 600 140" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <filter id="inkEdge" x="-5%" y="-30%" width="110%" height="160%"><feTurbulence type="fractalNoise" baseFrequency="0.02 0.5" numOctaves="3" seed="7"/><feDisplacementMap in="SourceGraphic" scale="22"/></filter>
+              <linearGradient id="inkFill" x1="0" x2="1"><stop offset="0" stop-color="#6a0e08" stop-opacity="0"/><stop offset="0.1" stop-color="#8a160c" stop-opacity="0.95"/><stop offset="0.65" stop-color="#4a0806" stop-opacity="0.9"/><stop offset="1" stop-color="#1a0403" stop-opacity="0"/></linearGradient>
+            </defs>
+            <path filter="url(#inkEdge)" fill="url(#inkFill)" d="M8 84 C 110 46, 300 40, 592 58 L 588 92 C 400 98, 220 112, 18 110 Z"/>
+          </svg>
+          <h1>Monkey King</h1>
+          <svg class="t-seal" viewBox="0 0 40 40" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="3" fill="#b0221a"/><g fill="#f4e6d0"><rect x="8" y="9" width="24" height="3"/><rect x="10" y="19" width="20" height="3"/><rect x="6" y="29" width="28" height="3"/><rect x="18.5" y="9" width="3" height="23"/></g><rect x="3" y="3" width="34" height="34" rx="2" fill="none" stroke="#f4e6d0" stroke-width="1.2"/></svg>
+        </div>
+        <div class="t-sub">Mountain-Sea Temple</div>
       </div>
-      <div class="menu-buttons">
-        ${hasSave ? '<button class="mbtn primary default" data-nav data-a="continue">Continue</button>' : ''}
-        <button class="mbtn ${hasSave ? '' : 'primary default'}" data-nav data-a="new">New Game</button>
-        <button class="mbtn" data-nav data-a="help">How to Play</button>
-      </div>
-      <div class="footer">Keyboard, touch or gamepad · Works offline · Install from the browser menu to play like an app</div>`);
+      <div class="press">${this.game.touch ? 'Tap to begin' : 'Press any button'}</div>
+      <nav class="title-menu">
+        ${hasSave ? '<button class="tm default" data-nav data-a="continue">Continue</button>' : ''}
+        <button class="tm ${hasSave ? '' : 'default'}" data-nav data-a="new">New Game</button>
+        <button class="tm" data-nav data-a="help">How to Play</button>
+        <button class="tm" data-nav data-a="credits">Credits</button>
+      </nav>
+      <div class="title-foot"><span>Works offline · Install from the browser menu</span><span>${this.game.touch ? '' : '<b>Enter / A</b> Select'}</span></div>`);
+    const begin = () => {
+      if (!this.splash) return;
+      this.splash = false;
+      this.game.audio.unlock();
+      this.game.audio.play('seal');
+      s.classList.replace('splash', 'ready');
+      s.querySelector<HTMLElement>('.tm.default')?.focus({ preventScroll: true });
+    };
+    s.addEventListener('pointerdown', begin);
+    const key = (e: KeyboardEvent) => {
+      if (this.screen !== s) return window.removeEventListener('keydown', key);
+      if (this.splash) { e.preventDefault(); begin(); }
+    };
+    window.addEventListener('keydown', key);
+    this.beginSplash = begin;
     this.on(s, '[data-a=continue]', () => this.game.startGame(false));
     this.on(s, '[data-a=new]', () => {
       if (!hasSave) return this.game.startGame(true);
-      this.confirm('Start a new game?', 'Your current progress will be replaced.', () => this.game.startGame(true), () => this.showStart(hasSave));
+      this.confirm('Start a new game?', 'Your current progress will be replaced.', () => this.game.startGame(true), () => this.showStart(hasSave, true));
     });
-    this.on(s, '[data-a=help]', () => this.showHelp(() => this.showStart(hasSave)));
+    this.on(s, '[data-a=help]', () => this.showHelp(() => this.showStart(hasSave, true)));
+    this.on(s, '[data-a=credits]', () => this.showCredits(() => this.showStart(hasSave, true)));
+  }
+
+  private beginSplash: (() => void) | null = null;
+
+  showCredits(back: () => void) {
+    const s = this.show('help', 'panel-screen', `
+      <div class="panel credits">
+        <h2>Credits</h2>
+        <p class="hint">A fan-made action RPG inspired by Black Myth: Wukong. Code, VFX, music and sound are made in the game itself.</p>
+        <h3>Free (CC0) art used</h3>
+        <ul class="skill-list">
+          <li><b>Quaternius</b>: Universal Animation Library 1 &amp; 2 (mannequin and motion-captured animations), Stylized Nature MegaKit</li>
+          <li>Character costumes, temple architecture and effects are built in code on top of these.</li>
+        </ul>
+        <h3>Tools</h3>
+        <ul class="skill-list"><li>three.js, glTF-Transform, meshoptimizer, Vite · Cinzel typeface (OFL)</li></ul>
+        <button class="mbtn primary default" data-nav data-a="back">Back</button>
+      </div>`, back);
+    this.on(s, '[data-a=back]', back);
   }
 
   private confirm(title: string, body: string, yes: () => void, no: () => void) {
@@ -269,7 +329,6 @@ export class Menus {
       <div class="gm-body">
         <div class="gm-content">${body}</div>
         <div class="gm-char">
-          <div class="char-art">${CHARACTER_ART}</div>
           <div class="char-level"><span>Lv</span>${p.level}</div>
           <div class="char-stats-col">
             ${stat('hp', 'Life', String(Math.round(st.maxHp)))}
@@ -309,6 +368,23 @@ export class Menus {
       g.resetTalents();
       this.showGameMenu('advance');
     });
+    const detail = s.querySelector<HTMLElement>('.t-detail');
+    if (detail) {
+      const showTalent = (el: HTMLElement) => {
+        detail.querySelector('.td-name')!.textContent = el.dataset.name!;
+        detail.querySelector('.td-rank')!.textContent = 'Rank ' + el.dataset.rank;
+        detail.querySelector('.td-desc')!.textContent = el.dataset.desc!;
+        const req = detail.querySelector<HTMLElement>('.td-req')!;
+        req.textContent = el.dataset.req!;
+        req.className = 'td-req ' + (el.classList.contains('can') ? 'ok' : '');
+      };
+      s.querySelectorAll<HTMLElement>('[data-talent]').forEach((el) => {
+        el.addEventListener('focus', () => showTalent(el));
+        el.addEventListener('mouseenter', () => showTalent(el));
+      });
+      const f = document.activeElement as HTMLElement | null;
+      if (f?.dataset.talent) showTalent(f);
+    }
     // Spells
     this.on(s, '[data-slot]', (el) => {
       this.spellSlot = +el.dataset.slot!;
@@ -392,22 +468,26 @@ export class Menus {
 
   private advanceTab() {
     const p = this.game.player;
-    const branches: Branch[] = ['Body', 'Staff', 'Spells', 'Gourd', 'Great Sage'];
+    const branches: [Branch, string][] = [['Body', 'hp'], ['Staff', 'damage'], ['Spells', 'spell'], ['Gourd', 'gourd'], ['Great Sage', 'crit']];
     return `
-      <div class="tab-title"><h2>Self-Advance</h2><span class="hint">Points: <b>${pointsAvailable(p.level, p.talents)}</b> · one per level</span>
-        <button class="mini-btn" data-nav data-a="reset-talents" data-key="reset">Reset points</button></div>
-      <div class="talent-tree">
-        ${branches.map((b) => `<div class="branch"><h3>${b}</h3>${TALENTS.filter((t) => t.branch === b).map((t) => {
-          const r = rank(p.talents, t.id);
-          const why = canLearn(t, p.talents, p.level);
-          const locked = why && why !== 'Maxed' && why !== 'No points';
-          return `<button class="talent ${r > 0 ? 'learned' : ''} ${r >= t.max ? 'max' : ''} ${locked ? 'locked' : ''} ${!why ? 'can' : ''}" data-nav data-talent="${t.id}" data-key="t-${t.id}">
-            <span class="t-name">${t.name}</span>
-            <span class="t-pips">${Array.from({ length: t.max }, (_, i) => `<i class="${i < r ? 'on' : ''}"></i>`).join('')}</span>
-            <span class="t-desc">${t.desc(Math.max(1, r + (r < t.max ? 1 : 0)))}</span>
-            ${locked ? `<span class="t-req">${why}</span>` : ''}
-          </button>`;
-        }).join('')}</div>`).join('')}
+      <div class="tab-title"><h2>Self-Advance</h2><span class="hint">Sparks: <b>${pointsAvailable(p.level, p.talents)}</b> · one per level</span>
+        <button class="mini-btn" data-nav data-a="reset-talents" data-key="reset">Reset</button></div>
+      <div class="adv-layout">
+        <div class="talent-tree">
+          ${branches.map(([b, icon]) => `<div class="branch"><h3>${b}</h3><div class="nodes">${TALENTS.filter((t) => t.branch === b).map((t) => {
+            const r = rank(p.talents, t.id);
+            const why = canLearn(t, p.talents, p.level);
+            const locked = why && why !== 'Maxed' && why !== 'No points';
+            const esc = (x: string) => x.replace(/"/g, '&quot;');
+            return `<button class="tnode ${r > 0 ? 'learned' : ''} ${r >= t.max ? 'max' : ''} ${locked ? 'locked' : ''} ${!why ? 'can' : ''}" data-nav data-talent="${t.id}" data-key="t-${t.id}"
+                data-name="${esc(t.name)}" data-desc="${esc(t.desc(Math.max(1, r + (r < t.max ? 1 : 0))))}" data-rank="${r} / ${t.max}" data-req="${locked ? esc(why) : !why ? 'Ready to learn' : why === 'Maxed' ? 'Mastered' : 'No sparks left'}">
+              <span class="tn-gem">${STAT_ICONS[icon] ?? ''}</span>
+              <span class="tn-name">${t.name}</span>
+              <span class="t-pips">${Array.from({ length: t.max }, (_, i) => `<i class="${i < r ? 'on' : ''}"></i>`).join('')}</span>
+            </button>`;
+          }).join('')}</div></div>`).join('')}
+        </div>
+        <div class="t-detail"><h3 class="td-name">Self-Advance</h3><div class="td-rank"></div><p class="td-desc">Select a talent to read about it.</p><p class="td-req"></p></div>
       </div>`;
   }
 

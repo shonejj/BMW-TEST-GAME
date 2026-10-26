@@ -4,6 +4,7 @@ import { clamp, noise2, seeded } from '../engine/util';
 import { makeBlob } from '../game/vfx';
 import { flagstoneTexture, groundDetailTexture, mistTexture } from './textures';
 import { focusUniform, propParts, windUniform } from './nature';
+import { buildShrine, type Shrine } from './shrine';
 import {
   balustrade, breakable, brokenPillar, colored, guardianStatue,
   pavilion, pineGeometry, rockGeometry, sealBarrier, stoneLantern, templeHall, vcMaterial,
@@ -74,6 +75,8 @@ export class Level {
   readonly obstacles: Circle[] = [];
   readonly breakables: Breakable[] = [];
   readonly gates: Gate[] = [];
+  /** Keeper's Shrines, one beside each zone's checkpoint (zones[i] ↔ shrines[i]). */
+  readonly shrines: Shrine[] = [];
   readonly zones: ZoneDef[];
   readonly bounds = { x0: -34, x1: 34, z0: -160, z1: 14 };
   private readonly rng = seeded(42);
@@ -224,6 +227,7 @@ export class Level {
     this.buildFlagstones();
     this.buildStairs();
     this.buildArchitecture();
+    this.buildShrines();
     this.buildFoliage(density);
     this.buildBreakables();
     this.buildGates();
@@ -448,6 +452,16 @@ export class Level {
     this.place(templeHall(), 0, STAIRS.h, -162);
   }
 
+  private buildShrines() {
+    for (const z of this.zones) {
+      const x = z.checkpoint.x + 3.2, zz = z.checkpoint.z - 1.5;
+      const s = buildShrine(x, this.heightAt(x, zz), zz, Math.atan2(z.checkpoint.x - x, z.checkpoint.z - zz));
+      this.obstacles.push({ x, z: zz, r: 1.3 });
+      this.shrines.push(s);
+      this.group.add(s.group);
+    }
+  }
+
   private mat4(x: number, y: number, z: number, s: number, rotY: number, sy = s) {
     return new THREE.Matrix4().compose(
       new THREE.Vector3(x, y, z),
@@ -484,6 +498,11 @@ export class Level {
    * player (see nature.ts), so the forest can crowd right up to the paths.
    */
   private buildFoliage(density: number) {
+    // Leaf cards are alpha-cut and overlap heavily, so foliage is mostly a fill-rate cost: phones (Medium/Low)
+    // get fewer trees, kept further back, and a thinner carpet of plants.
+    const treeD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.55 : 0.3;
+    const coverD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.6 : 0.35;
+    const treeGap = this.quality === 'high' ? 2.6 : 3.6;
     const buckets = new Map<string, THREE.Matrix4[]>();
     const add = (name: string, x: number, y: number, z: number, s: number, rot = this.rng() * 6.28) => {
       if (!buckets.has(name)) buckets.set(name, []);
@@ -512,12 +531,12 @@ export class Level {
           if (r < 0.1 * density) far.push(this.mat4(jx, y - 0.2, jz, 1.4 + this.rng() * 1.2, this.rng() * 6));
           continue;
         }
-        if (fd > 2.6 && r < 0.1 * density) {
+        if (fd > treeGap && r < 0.1 * treeD) {
           tree(forest, jx, jz, y);
           if (this.rng() < 0.35) add(pick(['Mushroom_Common', 'Fern_1', 'Rock_Medium_1']), jx + 1, this.terrainHeight(jx + 1, jz + 0.6), jz + 0.6, 0.5 + this.rng() * 0.4);
-        } else if (fd > 1.2 && fd < 10 && r < 0.32 * density) {
+        } else if (fd > 1.2 && fd < 10 && r < 0.32 * coverD) {
           add(pick(['Bush_Common', 'Bush_Large', 'Bush_Common', 'Fern_1', 'Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.05, jz, 0.6 + this.rng() * 0.6);
-        } else if (fd > 0.25 && fd < 7 && r < 0.8 * density) {
+        } else if (fd > 0.25 && fd < 7 && r < 0.8 * coverD) {
           add(pick(['Fern_1', 'Fern_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Clover_1', 'Grass_Common_Short']), jx, y, jz, 0.55 + this.rng() * 0.5);
         } else if (fd <= 0.25 && forest) {
           // Inside the clearing: a few solid features to fight around, and a carpet of low growth.
@@ -527,7 +546,7 @@ export class Level {
             if (kind < 0.3) { tree(true, jx, jz, y); this.obstacles.push({ x: jx, z: jz, r: 0.7 }); }
             else if (kind < 0.65) { add(pick(['Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.2, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.25 * s }); }
             else { add('Bush_Large', jx, y - 0.1, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.3 * s }); }
-          } else if (r < 0.5 * density && this.isWalkable(jx, jz, 0)) {
+          } else if (r < 0.5 * coverD && this.isWalkable(jx, jz, 0)) {
             add(pick(['Grass_Common_Short', 'Grass_Common_Short', 'Clover_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Pebble_Round_1']), jx, y, jz, 0.4 + this.rng() * 0.35);
           }
         } else if (fd <= 0.25 && r < 0.04 * density) {
@@ -644,6 +663,7 @@ export class Level {
 
   update(dt: number, time: number, focus?: THREE.Vector3) {
     windUniform.value = time;
+    for (const s of this.shrines) s.update(time);
     if (focus) focusUniform.value.copy(focus);
     for (const [i, m] of this.mist.entries()) {
       if (focus) m.position.set(focus.x - 4, this.heightAt(0, focus.z) + (i ? 1.8 : 0.6), focus.z - 4);

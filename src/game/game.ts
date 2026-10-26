@@ -187,7 +187,7 @@ export class Game {
   private prewarmShaders() {
     const hidden = new THREE.Vector3(0, -60, 0);
     for (const k of ['gale', 'fire', 'web', 'feather'] as const) this.projectile(k, hidden, 0, 0, 0, 0, 'enemy', 0);
-    const dummies = (['spiderling', 'armored', 'weaver', 'ghoul', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    const dummies = (['spiderling', 'armored', 'weaver', 'ghoul', 'ghoul', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
     this.vfx.prewarm(this.renderer.renderer, this.renderer.camera);
     for (const d of dummies) d.dispose();
     this.enemies = [];
@@ -206,6 +206,9 @@ export class Game {
 
   toMainMenu() {
     this.state = 'menu';
+    // The title shot frames the hero by the first shrine, with no leftover fight around him.
+    this.resetWorld(0);
+    this.player.respawn(this.level.zones[0].checkpoint);
     this.hud.setVisible(false);
     this.controls.setVisible(false);
     this.menus.showStart(!!loadSave());
@@ -319,6 +322,7 @@ export class Game {
       b.hp = b.def.hp;
       b.def.mesh.visible = true;
     }
+    this.level.shrines.forEach((s, i) => { s.setLit(i < cleared); s.armed = true; });
     this.victoryTimer = -1;
     this.camRig.setZoom(1);
   }
@@ -344,6 +348,7 @@ export class Game {
       this.level.setGate(i, opener >= idx);
     });
     this.player.respawn(this.level.zones[idx].checkpoint);
+    this.level.shrines[idx]?.setLit(true);
     this.camRig.snap(this.player.pos);
     this.camRig.setZoom(1);
     this.menus.close();
@@ -936,6 +941,40 @@ export class Game {
     }
   }
 
+  /**
+   * Title backdrop: a slow, low orbit around the hero standing by the first shrine, framed on the right
+   * third so the menu sits over open space on the left.
+   */
+  private titleShot(dt: number) {
+    const pl = this.player;
+    const h = pl.pos;
+    const a = 2.45 + Math.sin(this.time * 0.06) * 0.3;
+    const cam = this.renderer.camera;
+    const r = cam.aspect < 1 ? 6.2 : 4.6;
+    cam.position.set(h.x + Math.sin(a) * r, h.y + 1.05, h.z + Math.cos(a) * r);
+    const shift = cam.aspect < 1 ? 0 : 1.5;
+    cam.lookAt(h.x - Math.cos(a) * shift, h.y + 1.3, h.z + Math.sin(a) * shift);
+    pl.yaw = a - 0.55;
+    pl.root.rotation.y = pl.yaw;
+    pl.anim.loop('lookAround', 0.8, 0.4);
+    pl.anim.update(dt, 0);
+    this.camRig.target.copy(h);
+    this.level.shrines[0]?.setLit(true);
+  }
+
+  /** Game menu backdrop: the real hero in a three-quarter portrait on the right of the screen. */
+  private portraitShot(dt: number) {
+    const pl = this.player;
+    const h = pl.pos;
+    const a = pl.yaw + 0.5;
+    const cam = this.renderer.camera;
+    cam.position.set(h.x + Math.sin(a) * 3.6, h.y + 1.45, h.z + Math.cos(a) * 3.6);
+    const shift = cam.aspect < 1 ? 0 : 1.15;
+    cam.lookAt(h.x - Math.cos(a) * shift, h.y + 1.05, h.z + Math.sin(a) * shift);
+    pl.anim.loop('idle', 1, 0.3);
+    pl.anim.update(dt, 0);
+  }
+
   private frame(rawDt: number) {
     this.input.update();
     if (this.input.consume('pause')) {
@@ -960,10 +999,8 @@ export class Game {
     }
 
     if (this.state === 'menu') {
-      // Slow drift camera behind the menu.
       this.time += rawDt;
-      this.tmp.set(Math.sin(this.time * 0.1) * 3, 0, -6 + Math.cos(this.time * 0.08) * 4);
-      this.camRig.update(rawDt, this.tmp);
+      this.titleShot(rawDt);
       this.rain.update(rawDt, this.camRig.target);
       this.level.update(rawDt, this.time, this.camRig.target);
       this.vfx.update(rawDt);
@@ -977,6 +1014,7 @@ export class Game {
       if (this.state === 'playing' || this.state === 'dead') {
         this.player.update(dt);
         this.updateDirector(dt);
+        this.updateShrines();
         // During cutscenes only the boss's entrance animation keeps running.
         for (const e of this.enemies) if (!this.cutscene || (e instanceof Boss && e.introPlaying)) e.update(dt);
         this.enemies = this.enemies.filter((e) => !e.removed);
@@ -1000,6 +1038,7 @@ export class Game {
       this.cutscene?.update(rawDt);
     } else this.camRig.update(rawDt, pl.pos);
     this.input.anyPress = false;
+    if (this.state === 'paused' && this.menus.current === 'game') this.portraitShot(rawDt);
     this.overlays.update(this.enemies, this.renderer.camera);
     this.renderer.render();
 
@@ -1107,6 +1146,32 @@ export class Game {
     this.menus.showVictory({ time: `${Math.floor(t / 60)}m ${t % 60}s`, kills: this.kills, gold: this.inventory.gold, level: this.player.level, ng: this.ng });
     // Mark the chapter complete in the save so "Continue" starts the next torment.
     this.save(true);
+  }
+
+  /** Walking up to a Keeper's Shrine (outside a fight) lights it: heal, refill, save, set respawn. */
+  private updateShrines() {
+    const p = this.player;
+    if (!p.alive || this.state !== 'playing') return;
+    const fighting = this.zoneState.some((s) => s === 'active');
+    this.level.shrines.forEach((s, i) => {
+      const d = Math.hypot(p.pos.x - s.pos.x, p.pos.z - s.pos.z);
+      if (d > 4) s.armed = true;
+      if (d > 2.6 || !s.armed || fighting) return;
+      s.armed = false;
+      const first = !s.lit;
+      s.setLit(true);
+      p.heal(p.stats.maxHp);
+      p.mana = p.stats.maxMana;
+      p.refillGourd();
+      this.vfx.beam(s.pos, COLORS.gold, 9, 0.8, 1.6);
+      this.vfx.shockwave(s.pos, 4, COLORS.gold, 0.6, 0.2);
+      this.vfx.sparks.emit(s.pos.x, s.pos.y + 1.2, s.pos.z, { count: 40, radius: 1, speed: [0.5, 2], up: [1, 4], gravity: -0.5, life: [0.8, 1.6], color: COLORS.goldHot, color2: COLORS.gold });
+      this.audio.play('focus');
+      this.rumble(0.3, 120);
+      if (first) this.hud.showTitle("Keeper's Shrine", this.level.zones[i].name);
+      else this.hud.toast('Rested at the shrine · health and gourd restored', '#ffd27a');
+      this.save();
+    });
   }
 
   private updateDirector(dt: number) {

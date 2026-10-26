@@ -3,8 +3,9 @@
 An isometric action-RPG for the web, inspired by the "Black Myth: Wukong Mobile" gameplay footage
 (see [PLAN.md](PLAN.md) for the frame analysis). It runs on PC and mobile and works fully offline.
 
-All art, animation and audio are **original and generated in code**: low-poly procedural models,
-shader VFX and Web Audio synthesis. No assets were taken from the reference video.
+Characters are animated with motion-captured clips from free **CC0** asset packs, dressed with costumes built
+in code. Foliage uses a CC0 nature kit. VFX and Web Audio sound are made in code. No assets were taken
+from the reference video. See *Credits* below.
 
 ## Play
 
@@ -30,6 +31,8 @@ shader VFX and Web Audio synthesis. No assets were taken from the reference vide
 
 ## What's in the game
 
+- **Camera:** a Hades/Diablo-style 45° three-quarter view. Tall foliage between the camera and the hero dissolves.
+- **Checkpoints:** a Keeper's Shrine in every area. Walk up to it to heal, refill the gourd, save and set your respawn point.
 - **Chapter 1:** five areas (Forest Clearing → Temple Courtyard → Stone Stairs → Upper Plaza → boss arena), plus
   in-engine **cutscenes** for the chapter intro, the boss entrance and the victory. Cutscenes can be skipped with any button.
 - **Combat:**
@@ -52,13 +55,11 @@ shader VFX and Web Audio synthesis. No assets were taken from the reference vide
   - Frame cap (30/60), auto resolution, pooled effects and prewarmed shaders so nothing stutters mid-fight
   - Gamepad rumble and a reduced-shake option
 
-### Using real 3D models
+### Credits
 
-All characters are procedural low-poly models built in code, so the game stays small and works offline.
-To get the look of a hand-crafted game, the next step is artist-made, rigged `.glb` characters and environment
-props, for example from an artist or licensed asset stores. The renderer already uses three.js, so glTF assets
-can be loaded with `GLTFLoader` and played back with `AnimationMixer` (see the `threejs-gltf-loading` skill in
-`.claude/skills`).
+- **Quaternius** (CC0): Universal Animation Library 1 & 2 (mannequin and mocap clips), Stylized Nature MegaKit.
+- `tools/build-assets.mjs` picks the clips and props, simplifies them and compresses them with meshopt into
+  `src/assets/models/*.glb`. The build inlines those files, so the single-file offline version still works.
 
 ## Develop
 
