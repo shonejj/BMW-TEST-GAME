@@ -22,6 +22,7 @@ import { DEFAULT_SPELLS, TALENTS, canLearn, pointsAvailable, spellUnlocked, type
 import { loadSave, loadSettings, writeSave, writeSettings, type SaveData, type Settings } from './save';
 import { COLORS, Vfx } from './vfx';
 import { Cutscene, v, type Shot } from './cutscene';
+import { CHAPTERS } from './chapters';
 
 export interface StrikeOptions {
   origin: THREE.Vector3;
@@ -123,6 +124,10 @@ export class Game {
   private miniTimer = 0;
   private lastZoneName = '';
   private ng = 0;
+  chapter = 0;
+  /** Zones cleared in each chapter (its lit shrines are 0..progress), and chapters available to play. */
+  progress: number[] = CHAPTERS.map(() => 0);
+  unlocked = 1;
   private kills = 0;
   private playTime = 0;
   private deathTimer = 0;
@@ -175,6 +180,7 @@ export class Game {
     this.overlays = new EnemyOverlays(this.renderer.scene);
     if (q === 'high') this.player.root.traverse((o) => (o.castShadow = true));
     this.miniMap = this.level.renderMinimap();
+    this.applyChapter(0);
     this.audio.setVolume(this.settings.volume);
     this.camRig.shakeScale = this.settings.screenShake;
     this.audio.setMusicVolume(this.settings.music);
@@ -193,17 +199,39 @@ export class Game {
     });
   }
 
+  private readyKinds = new Set<string>();
+
+  /**
+   * Builds (and discards) one of each enemy kind so their costume geometry is baked up front instead of at
+   * the first spawn. Shaders are shared between characters, so compiling happens once, at boot.
+   */
+  private warmKinds(kinds: readonly SpawnKind[]) {
+    const hidden = new THREE.Vector3(0, -60, 0);
+    const todo = kinds.filter((k) => !this.readyKinds.has(k));
+    if (!todo.length) return [];
+    for (const k of todo) this.readyKinds.add(k);
+    const dummies = todo.map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    return dummies;
+  }
+
+  private dropWarm(dummies: Enemy[]) {
+    for (const d of dummies) d.dispose();
+    this.enemies = this.enemies.filter((e) => !dummies.includes(e));
+    this.boss = null;
+  }
+
   /** Compile every shader the game uses at load time so nothing compiles mid-fight. */
   private prewarmShaders() {
     const hidden = new THREE.Vector3(0, -60, 0);
     for (const k of ['gale', 'fire', 'web', 'feather'] as const) this.projectile(k, hidden, 0, 0, 0, 0, 'enemy', 0);
-    const dummies = (['spiderling', 'armored', 'weaver', 'ghoul', 'ghoul', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    // Two monk variants, the spider, the caster and the boss cover every material/shader variant.
+    const dummies = [...this.warmKinds(['spiderling', 'armored', 'weaver', 'ghoul', 'boss']), this.spawnEnemy('ghoul', 1, hidden.clone())];
     // Compile for the target the frame will actually use (the pixel pass renders into a render target,
     // which changes the shader variants), so nothing compiles mid-game.
     this.renderer.renderer.setRenderTarget(this.renderer.activeTarget);
     this.vfx.prewarm(this.renderer.renderer, this.renderer.camera);
     this.renderer.renderer.setRenderTarget(null);
-    for (const d of dummies) d.dispose();
+    this.dropWarm(dummies);
     this.enemies = [];
     this.boss = null;
     for (const p of this.projectiles) this.releaseProjectile(p);
@@ -221,12 +249,69 @@ export class Game {
   toMainMenu() {
     this.state = 'menu';
     this.hud.setLetterbox(false);
+    this.applyChapter(0);
     // The title shot frames the hero by the first shrine, with no leftover fight around him.
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
     this.hud.setVisible(false);
     this.controls.setVisible(false);
     this.menus.showStart(!!loadSave());
+  }
+
+  /** Skins the world for chapter `n` (palette, weather, grade) and loads its zones/enemies. */
+  private applyChapter(n: number) {
+    this.chapter = n;
+    const c = CHAPTERS[n];
+    this.level.applyChapter(c);
+    this.rain.setStyle(c.theme.weather, c.theme.weatherColor);
+    this.rain.setVisibleCount(Math.min(c.theme.weatherCount, this.settings.quality === 'low' ? 350 : this.settings.quality === 'medium' ? 650 : 1400));
+    this.renderer.setGrade(c.theme.grade, c.theme.saturation);
+    this.hud.weatherName = { rain: 'Rain', dust: 'Wind-blown sand', snow: 'Snowfall' }[c.theme.weather];
+    this.lastZoneName = '';
+  }
+
+  /** Begins (or re-enters) a chapter at its furthest cleared shrine. Progress in every chapter is kept. */
+  startChapter(n: number, intro = true) {
+    this.applyChapter(n);
+    // Bake this chapter's costumes now (a brief pause at the transition) rather than at the first spawn.
+    const kinds = new Set<SpawnKind>();
+    for (const z of CHAPTERS[n].zones) for (const w of z.waves) for (const [k] of w.kinds) kinds.add(k);
+    this.dropWarm(this.warmKinds([...kinds]));
+    const cleared = Math.min(this.progress[n] ?? 0, this.level.zones.length - 1);
+    this.resetWorld(cleared);
+    this.player.respawn(this.level.zones[cleared].checkpoint);
+    this.camRig.snap(this.player.pos, this.player.yaw);
+    this.menus.close();
+    this.hud.setVisible(true);
+    this.controls.setVisible(true);
+    this.state = 'playing';
+    this.hud.setLetterbox(this.settings.camera === 'cinema');
+    this.lastZoneName = '';
+    const c = CHAPTERS[n];
+    if (cleared === 0 && intro && this.settings.cutscenes) this.playIntro();
+    else this.hud.showTitle(cleared === 0 ? c.title : `${c.title} · ${this.ng ? 'Torment ' + this.ng : 'Continue'}`, cleared === 0 ? c.place : this.level.zones[cleared].name);
+    this.hud.setObjective(c.objective);
+    this.save();
+  }
+
+  /** Fast travel to a lit Keeper's Shrine in this chapter (not during a fight). */
+  travelTo(zone: number) {
+    if (zone > this.progress[this.chapter] || this.zoneState.some((s) => s === 'active')) {
+      this.hud.toast(zone > this.progress[this.chapter] ? 'That shrine is not lit yet' : 'Finish the fight first', '#c8b89a');
+      return;
+    }
+    this.menus.close();
+    this.state = 'playing';
+    this.hud.setVisible(true);
+    this.controls.setVisible(true);
+    this.input.clearPresses();
+    const at = this.level.zones[zone].checkpoint;
+    this.player.pos.set(at.x, this.level.heightAt(at.x, at.z), at.z);
+    this.player.respawn(this.player.pos.clone());
+    this.camRig.snap(this.player.pos, this.player.yaw);
+    this.vfx.twinkle(this.player.pos, 1.6, 12);
+    this.audio.play('seal');
+    this.hud.showTitle("Keeper's Shrine", this.level.zones[zone].name);
   }
 
   startGame(fresh: boolean) {
@@ -244,6 +329,9 @@ export class Game {
       this.player.spells = (save.spells ?? DEFAULT_SPELLS).map((id, i) => (spellUnlocked(id, this.player.talents) ? id : DEFAULT_SPELLS[i]));
       this.inventory = { gold: save.gold, bag: save.bag, equipped: save.equipped };
       this.ng = save.ng;
+      this.chapter = Math.min(save.chapter ?? 0, CHAPTERS.length - 1);
+      this.progress = CHAPTERS.map((_, i) => save.progress?.[i] ?? (i === this.chapter ? save.cleared : 0));
+      this.unlocked = Math.max(save.unlocked ?? 1, this.chapter + 1);
       this.kills = save.kills;
       this.playTime = save.playTime;
       setNextItemId(save.nextItemId);
@@ -256,24 +344,14 @@ export class Game {
       this.player.fury = 0;
       this.inventory = { gold: 0, bag: [], equipped: {} };
       this.ng = 0;
+      this.chapter = 0;
+      this.progress = CHAPTERS.map(() => 0);
+      this.unlocked = 1;
       this.kills = 0;
       this.playTime = 0;
     }
     this.player.computeStats(this.inventory);
-    const cleared = save ? Math.min(save.cleared, this.level.zones.length - 1) : 0;
-    this.resetWorld(cleared);
-    this.player.respawn(this.level.zones[cleared].checkpoint);
-    this.camRig.snap(this.player.pos, this.player.yaw);
-    this.menus.close();
-    this.hud.setVisible(true);
-    this.controls.setVisible(true);
-    this.state = 'playing';
-    this.hud.setLetterbox(this.settings.camera === 'cinema');
-    this.lastZoneName = '';
-    if (cleared === 0 && this.settings.cutscenes) this.playIntro();
-    else this.hud.showTitle(cleared === 0 ? 'Chapter One' : `Chapter One · ${this.ng ? 'Torment ' + this.ng : 'Continue'}`, cleared === 0 ? 'Mountain-Sea Temple' : this.level.zones[cleared].name);
-    this.hud.setObjective('Explore the temple grounds');
-    this.save();
+    this.startChapter(this.chapter);
   }
 
   pause() {
@@ -359,7 +437,7 @@ export class Game {
       b.hp = b.def.hp;
       b.def.mesh.visible = true;
     }
-    this.level.shrines.forEach((s, i) => { s.setLit(i < cleared); s.armed = true; });
+    this.level.shrines.forEach((s, i) => { s.setLit(i <= cleared); s.armed = true; });
     this.victoryTimer = -1;
     this.camRig.setZoom(1);
   }
@@ -397,20 +475,26 @@ export class Game {
 
   newGamePlus() {
     this.ng++;
-    this.resetWorld(0);
-    this.player.respawn(this.level.zones[0].checkpoint);
-    this.camRig.snap(this.player.pos, this.player.yaw);
-    this.menus.close();
-    this.state = 'playing';
-    this.hud.setVisible(true);
-    this.controls.setVisible(true);
-    this.hud.showTitle(`Torment ${this.ng}`, 'Mountain-Sea Temple');
-    this.save();
+    this.progress = CHAPTERS.map(() => 0);
+    this.startChapter(0, false);
+    this.hud.showTitle(`Torment ${this.ng}`, CHAPTERS[0].place);
   }
 
-  private save(chapterComplete = false) {
+  /** After a boss: advance to the next chapter (unlocking it) or loop into Torment on the last. */
+  nextChapter() {
+    if (this.chapter < CHAPTERS.length - 1) this.startChapter(this.chapter + 1);
+    else this.newGamePlus();
+  }
+
+  /**
+   * Writes the save. 'normal' records the current chapter's furthest cleared zone; 'advance' resumes at the
+   * start of the next chapter; 'torment' (last chapter done) loops back to chapter one one Torment higher.
+   */
+  private save(mode: 'normal' | 'advance' | 'torment' = 'normal') {
     const firstOpen = this.zoneState.findIndex((s) => s !== 'cleared');
-    const cleared = chapterComplete ? 0 : firstOpen;
+    if (mode === 'normal') this.progress[this.chapter] = Math.max(this.progress[this.chapter] ?? 0, firstOpen < 0 ? this.level.zones.length - 1 : firstOpen);
+    const chapter = mode === 'advance' ? this.chapter + 1 : mode === 'torment' ? 0 : this.chapter;
+    const progress = this.progress.map((p, i) => (mode === 'torment' ? 0 : mode === 'advance' && i === chapter ? 0 : p));
     const data: SaveData = {
       version: 1,
       level: this.player.level,
@@ -421,11 +505,14 @@ export class Game {
       gold: this.inventory.gold,
       bag: this.inventory.bag,
       equipped: this.inventory.equipped,
-      cleared: cleared < 0 ? 0 : cleared,
-      ng: this.ng + (chapterComplete ? 1 : 0),
+      cleared: progress[chapter] ?? 0,
+      ng: this.ng + (mode === 'torment' ? 1 : 0),
       nextItemId: Math.max(0, ...this.inventory.bag.map((i) => i.id), ...Object.values(this.inventory.equipped).map((i) => i?.id ?? 0)) + 1,
       kills: this.kills,
       playTime: this.playTime,
+      chapter,
+      progress,
+      unlocked: this.unlocked,
     };
     writeSave(data);
   }
@@ -538,8 +625,8 @@ export class Game {
       e.hp = 0;
       e.kill();
       this.onEnemyKilled(e);
-      this.audio.play(e.kind === 'ghoul' || e.kind === 'weaver' ? 'ghoulDie' : e.isBoss ? 'roar' : 'creatureDie');
-    } else if (dir && (e.kind === 'ghoul' || e.kind === 'weaver') && chance(0.35)) {
+      this.audio.play(e.isBoss ? 'roar' : e.kind === 'spiderling' || e.kind === 'armored' ? 'creatureDie' : 'ghoulDie');
+    } else if (dir && !e.isBoss && e.kind !== 'spiderling' && e.kind !== 'armored' && chance(0.35)) {
       this.audio.play('ghoulHurt');
     }
   }
@@ -583,9 +670,9 @@ export class Game {
   // -------------------------------------------------------------------------
 
   spawnEnemy(kind: SpawnKind, level: number, at: THREE.Vector3, elite = false, zone = -1): Enemy {
-    const e = kind === 'boss' ? new Boss(this, level, at)
-      : kind === 'ghoul' ? new Ghoul(this, level, at)
-        : kind === 'weaver' ? new Weaver(this, level, at)
+    const e = kind === 'boss' || kind === 'tiger' || kind === 'bonelady' ? new Boss(this, level, at, kind)
+      : kind === 'ghoul' || kind === 'wolf' || kind === 'bone' ? new Ghoul(this, level, at, kind)
+        : kind === 'weaver' || kind === 'archer' || kind === 'frost' ? new Weaver(this, level, at, kind)
           : new Spider(this, kind, level, at);
     if (elite) e.makeElite();
     this.enemies.push(e);
@@ -602,8 +689,8 @@ export class Game {
     let eliteGiven = false;
     for (const [kind, count] of wave.kinds) {
       for (let i = 0; i < count; i++) {
-        if (kind === 'boss') {
-          this.spawnEnemy('boss', lvl, new THREE.Vector3(0, this.level.heightAt(0, -141), -141), false, zoneIndex);
+        if (kind === 'boss' || kind === 'tiger' || kind === 'bonelady') {
+          this.spawnEnemy(kind, lvl, new THREE.Vector3(0, this.level.heightAt(0, -141), -141), false, zoneIndex);
           continue;
         }
         const at = this.level.randomPointIn(z.area, 1.2, this.player.pos, 6);
@@ -918,7 +1005,7 @@ export class Game {
     this.dropItem(boss.pos, lvl, 0, chance(0.35 + this.ng * 0.1) ? 4 : 3);
     for (let i = 0; i < 3; i++) this.dropItem(boss.pos, lvl, 30 + this.ng * 5);
     for (const e of this.enemies) if (e.alive && !e.isBoss) { e.hp = 0; e.kill(); }
-    this.hud.toast('Blackfeather Lord defeated!', '#9cff6a');
+    this.hud.toast(`${boss.def.name} defeated!`, '#9cff6a');
     this.victoryTimer = 6;
     this.hud.setObjective('Collect your spoils');
   }
@@ -1169,26 +1256,25 @@ export class Game {
 
   private playIntro() {
     const p = this.player.pos;
+    const c = CHAPTERS[this.chapter];
     this.startCutscene([
-      { dur: 4.6, from: { pos: v(-12, 17, -116), look: v(0, 7, -160) }, to: { pos: v(7, 11, -128), look: v(0, 6, -158) },
-        subtitle: ['', 'For forty days the bells of the Mountain-Sea Temple have been silent.'] },
-      { dur: 4.4, from: { pos: v(-14, 16, -112), look: v(0, 4, -100) }, to: { pos: v(10, 12, -84), look: v(0, 1, -66) },
-        subtitle: ['', 'The monks fled. Something crawled up from beneath the stairs, and stayed.'] },
+      { dur: 4.6, from: { pos: v(-12, 17, -116), look: v(0, 7, -160) }, to: { pos: v(7, 11, -128), look: v(0, 6, -158) }, subtitle: c.intro[0] },
+      { dur: 4.4, from: { pos: v(-14, 16, -112), look: v(0, 4, -100) }, to: { pos: v(10, 12, -84), look: v(0, 1, -66) }, subtitle: c.intro[1] },
       { dur: 4.2, from: { pos: v(-8, 9, 18), look: v(p.x, 1, p.z) }, to: { pos: v(p.x + 2, 6.5, p.z + 8), look: v(p.x, 1.2, p.z - 1) },
-        title: ['Chapter One', 'Mountain-Sea Temple'],
-        subtitle: ['Little Monkey', 'Something foul nests in the main hall. Let us see what it is made of.'] },
+        title: [c.title, c.place], subtitle: c.intro[2] },
     ]);
   }
 
   private playBossIntro() {
     const b = v(0, 5, -141);
+    const c = CHAPTERS[this.chapter];
     this.startCutscene([
       { dur: 2.6, from: { pos: v(0, 11, -122), look: v(0, 9, -146) }, to: { pos: v(-5, 7, -128), look: v(0, 6, -141) },
-        onStart: () => this.audio.play('roar'), subtitle: ['', 'Black feathers fall like rain…'] },
-      { dur: 3.2, from: { pos: v(6, 6.5, -134), look: v(b.x, 7, b.z) }, to: { pos: v(4, 7.5, -132), look: v(b.x, 8, b.z) }, title: ['Hall of Black Feathers', 'Blackfeather Lord'],
-        subtitle: ['Blackfeather Lord', 'Another little monkey, come to die in my temple?'] },
+        onStart: () => this.audio.play('roar'), subtitle: c.bossIntro[0] },
+      { dur: 3.2, from: { pos: v(6, 6.5, -134), look: v(b.x, 7, b.z) }, to: { pos: v(4, 7.5, -132), look: v(b.x, 8, b.z) }, title: [this.level.zones[this.level.zones.length - 1].name, c.bossName],
+        subtitle: c.bossIntro[1] },
       { dur: 2.6, from: { pos: v(this.player.pos.x + 3, 8, this.player.pos.z + 7), look: v(this.player.pos.x, 6, this.player.pos.z) }, to: { pos: v(this.player.pos.x + 1, 7, this.player.pos.z + 6), look: v(this.player.pos.x, 6, this.player.pos.z - 2) },
-        subtitle: ['Little Monkey', 'Your temple? I will be taking it back.'] },
+        subtitle: c.bossIntro[2] },
     ]);
   }
 
@@ -1212,9 +1298,17 @@ export class Game {
     this.state = 'victory';
     this.controls.setVisible(false);
     const t = Math.floor(this.playTime);
-    this.menus.showVictory({ time: `${Math.floor(t / 60)}m ${t % 60}s`, kills: this.kills, gold: this.inventory.gold, level: this.player.level, ng: this.ng });
-    // Mark the chapter complete in the save so "Continue" starts the next torment.
-    this.save(true);
+    const c = CHAPTERS[this.chapter];
+    const last = this.chapter === CHAPTERS.length - 1;
+    // Chapter done: unlock the next one and put its start in the save so "Continue" resumes there.
+    this.progress[this.chapter] = this.level.zones.length - 1;
+    if (!last) {
+      this.unlocked = Math.max(this.unlocked, this.chapter + 2);
+      this.progress[this.chapter + 1] = this.progress[this.chapter + 1] ?? 0;
+    }
+    this.menus.showVictory({ time: `${Math.floor(t / 60)}m ${t % 60}s`, kills: this.kills, gold: this.inventory.gold, level: this.player.level, ng: this.ng,
+      title: c.title, text: c.victory, next: last ? null : CHAPTERS[this.chapter + 1].place });
+    this.save(last ? 'torment' : 'advance');
   }
 
   /** Walking up to a Keeper's Shrine (outside a fight) lights it: heal, refill, save, set respawn. */
@@ -1258,8 +1352,8 @@ export class Game {
         if (z.closesGate !== undefined) this.level.setGate(z.closesGate, true);
         if (i === zones.length - 1) {
           if (this.settings.cutscenes) this.playBossIntro();
-          else this.hud.showTitle(z.name, 'Blackfeather Lord');
-          this.hud.setObjective('Defeat the Blackfeather Lord');
+          else this.hud.showTitle(z.name, CHAPTERS[this.chapter].bossName);
+          this.hud.setObjective(`Defeat the ${CHAPTERS[this.chapter].bossName}`);
         } else this.hud.setObjective('Defeat the yaoguai');
       }
       if (this.zoneState[i] !== 'active') continue;

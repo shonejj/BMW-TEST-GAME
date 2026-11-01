@@ -3,7 +3,8 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { clamp, noise2, seeded } from '../engine/util';
 import { makeBlob } from '../game/vfx';
 import { flagstoneTexture, groundDetailTexture, mistTexture } from './textures';
-import { focusUniform, propParts, windUniform } from './nature';
+import { focusUniform, propParts, setNatureTint, windUniform } from './nature';
+import type { ChapterDef } from '../game/chapters';
 import { buildShrine, type Shrine } from './shrine';
 import {
   balustrade, breakable, brokenPillar, colored, guardianStatue,
@@ -37,7 +38,7 @@ export interface Gate {
   fade: number;
 }
 
-export type SpawnKind = 'spiderling' | 'armored' | 'weaver' | 'ghoul' | 'boss';
+export type SpawnKind = 'spiderling' | 'armored' | 'weaver' | 'ghoul' | 'wolf' | 'archer' | 'bone' | 'frost' | 'boss' | 'tiger' | 'bonelady';
 export interface WaveDef { kinds: [SpawnKind, number][]; elite?: boolean }
 export interface ZoneDef {
   name: string;
@@ -83,6 +84,8 @@ export class Level {
   private quality: 'low' | 'medium' | 'high' = 'medium';
   private stoneMat: THREE.MeshLambertMaterial | null = null;
   private moon: THREE.DirectionalLight | null = null;
+  private hemi: THREE.HemisphereLight | null = null;
+  private terrainMat: THREE.MeshLambertMaterial | null = null;
   private readonly mist: THREE.Mesh[] = [];
 
   constructor(private readonly scene: THREE.Scene) {
@@ -125,6 +128,26 @@ export class Level {
         closesGate: 2,
       },
     ];
+  }
+
+  /** Re-skins the level for a chapter: zone names/waves, lighting, fog, ground and foliage colours. */
+  applyChapter(c: ChapterDef) {
+    c.zones.forEach((cz, i) => {
+      const z = this.zones[i];
+      z.name = cz.name;
+      z.level = cz.level;
+      z.waves = cz.waves;
+    });
+    const t = c.theme;
+    this.scene.background = new THREE.Color(t.bg);
+    this.scene.fog = new THREE.FogExp2(t.fog, t.fogDensity);
+    this.hemi?.color.setHex(t.hemiSky);
+    this.hemi?.groundColor.setHex(t.hemiGround);
+    if (this.hemi) this.hemi.intensity = t.hemiIntensity;
+    this.moon?.color.setHex(t.moon);
+    if (this.moon) this.moon.intensity = t.moonIntensity;
+    this.terrainMat?.color.setHex(t.ground);
+    setNatureTint(t.foliage);
   }
 
   // -------------------------------------------------------------------------
@@ -250,6 +273,7 @@ export class Level {
       moon.shadow.normalBias = 0.03;
     }
     this.moon = moon;
+    this.hemi = hemi;
     this.group.add(hemi, moon, moon.target);
   }
 
@@ -310,7 +334,8 @@ export class Level {
     geo.computeVertexNormals();
     const detail = groundDetailTexture(this.quality === 'low' ? 128 : 256);
     this.worldUV(geo, 3);
-    const terrain = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, map: detail.map, normalMap: detail.normalMap }));
+    this.terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail.map, normalMap: detail.normalMap });
+    const terrain = new THREE.Mesh(geo, this.terrainMat);
     terrain.receiveShadow = true;
     this.group.add(terrain);
 

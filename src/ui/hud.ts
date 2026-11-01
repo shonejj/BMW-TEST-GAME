@@ -52,6 +52,7 @@ export class Hud {
   private letterbox!: HTMLDivElement;
   private subtitle!: HTMLDivElement;
   private skipHint!: HTMLDivElement;
+  weatherName = 'Rain';
 
   constructor(parent: HTMLElement) {
     this.root = h('div', 'hud');
@@ -163,7 +164,7 @@ export class Hud {
   }
 
   setLocation(name: string) {
-    this.loc.textContent = `${name} · Rain`;
+    this.loc.textContent = `${name} · ${this.weatherName}`;
   }
 
   setObjective(text: string) {

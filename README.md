@@ -31,7 +31,14 @@ from the reference video. See *Credits* below.
 
 ## What's in the game
 
-- **Camera:** a Hades/Diablo-style 45° three-quarter view. Tall foliage between the camera and the hero dissolves.
+- **Look:** a retro pixel render (low-res world, dithered limited palette, outlines) or smooth, in Settings.
+- **Camera styles:** Isometric, Third person, Side view (2D) and Cinematic. Switch any time with **C** (or Settings, or d-pad down).
+  Tall props and foliage between the camera and the hero dissolve in every style.
+- **Three chapters:** Mountain-Sea Temple, Yellow Wind Ridge (wolves, archers, the Tiger Vanguard) and the Frozen Bone Sanctum
+  (bone soldiers, frost witches, the Pale Bone Lady). Each has its own palette, weather, enemies, boss and story beats.
+- **Travel and save:** every Keeper's Shrine you light can be fast-travelled to from the **Travel** tab; chapters you unlock can be revisited.
+  Progress is saved per chapter.
+- **Gear you can see:** equipped staffs, armour, gloves, boots and relics change the hero, and every item has its own 3D pixel icon.
 - **Checkpoints:** a Keeper's Shrine in every area. Walk up to it to heal, refill the gourd, save and set your respawn point.
 - **Chapter 1:** five areas (Forest Clearing → Temple Courtyard → Stone Stairs → Upper Plaza → boss arena), plus
   in-engine **cutscenes** for the chapter intro, the boss entrance and the victory. Cutscenes can be skipped with any button.
@@ -50,7 +57,7 @@ from the reference video. See *Credits* below.
   character art and a stat column. All of it is navigable by gamepad.
 - **Visuals:**
   - Generated stone, ground, lacquer and roof-tile textures with surface relief; moonlight shadows (High); rain, mist, lantern glow
-- **Audio:** fully synthesised. A bus mixer with reverb, varied sound effects, and adaptive explore/combat/boss music.
+- **Audio:** recorded CC0 sound effects and a score sequenced live from real instrument samples (zither, erhu, flute, taiko, gongs), adaptive between explore, combat and boss.
 - **Performance and comfort:**
   - Frame cap (30/60), auto resolution, pooled effects and prewarmed shaders so nothing stutters mid-fight
   - Gamepad rumble and a reduced-shake option
@@ -58,6 +65,10 @@ from the reference video. See *Credits* below.
 ### Credits
 
 - **Quaternius** (CC0): Universal Animation Library 1 & 2 (mannequin and mocap clips), Stylized Nature MegaKit.
+- **Kenney** and **OpenGameArt** authors incl. rubberduck, artisticdude, qubodup, LokiF, SubspaceAudio (CC0): sound effects, via
+  `Legerdo/open-game-sfx-index`.
+- **Versilian Community Sample Library** (CC0): dan tranh zither, drums, gong, ocarina; **aliexpress-erhu** sample set (CC0).
+  `tools/build-audio.py` trims, normalises and encodes them.
 - `tools/build-assets.mjs` picks the clips and props, simplifies them and compresses them with meshopt into
   `src/assets/models/*.glb`. The build inlines those files, so the single-file offline version still works.
 

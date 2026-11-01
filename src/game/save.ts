@@ -18,6 +18,10 @@ export interface SaveData {
   talents?: Talents;
   spells?: SpellId[];
   bestiary?: Record<string, number>;
+  /** Current chapter index, zones cleared per chapter, and how many chapters are unlocked. */
+  chapter?: number;
+  progress?: number[];
+  unlocked?: number;
 }
 
 export interface Settings {

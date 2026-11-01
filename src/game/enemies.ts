@@ -3,11 +3,11 @@ import { approachAngle, clamp, damp, lerp, rand, wrapAngle, yawOf } from '../eng
 import { buildSpider, type SpiderKind, type SpiderRig } from './models';
 import { Animator, type Locomotion } from './animator';
 import type { Character } from './characters';
-import { buildCrowLord, buildMonk, buildWeaver, type CrowRig, type WeaverRig } from './outfits';
+import { buildArcher, buildBoneLady, buildBoneSoldier, buildCrowLord, buildFrostWitch, buildMonk, buildTiger, buildWeaver, buildWolf, type BossRig, type TailedRig, type WeaverRig } from './outfits';
 import { COLORS } from './vfx';
 import type { Game } from './game';
 
-export type EnemyKind = SpiderKind | 'ghoul' | 'boss';
+export type EnemyKind = SpiderKind | 'ghoul' | 'wolf' | 'archer' | 'bone' | 'frost' | 'boss' | 'tiger' | 'bonelady';
 type FlashMat = THREE.Material & { emissive: THREE.Color; emissiveIntensity: number };
 const BLACK = new THREE.Color(0);
 
@@ -27,7 +27,13 @@ export const KINDS: Record<EnemyKind, KindDef> = {
   armored: { name: 'Armored Broodmother', hp: 300, speed: 2.7, radius: 1.2, dmg: 22, xp: 55, gold: [10, 30], dropChance: 0.6 },
   ghoul: { name: 'Undead Monk', hp: 80, speed: 3.1, radius: 0.55, dmg: 13, xp: 16, gold: [2, 8], dropChance: 0.18 },
   weaver: { name: 'Web Weaver', hp: 95, speed: 3.6, radius: 0.75, dmg: 12, xp: 24, gold: [4, 12], dropChance: 0.35 },
+  wolf: { name: 'Wolf Guai', hp: 70, speed: 5.4, radius: 0.55, dmg: 14, xp: 20, gold: [3, 10], dropChance: 0.2 },
+  archer: { name: 'Wind Archer', hp: 85, speed: 3.6, radius: 0.55, dmg: 15, xp: 28, gold: [5, 14], dropChance: 0.4 },
+  bone: { name: 'Bone Soldier', hp: 160, speed: 3.0, radius: 0.6, dmg: 20, xp: 30, gold: [6, 16], dropChance: 0.35 },
+  frost: { name: 'Frost Witch', hp: 100, speed: 3.4, radius: 0.55, dmg: 16, xp: 32, gold: [6, 16], dropChance: 0.4 },
   boss: { name: 'Blackfeather Lord', hp: 3600, speed: 3.4, radius: 1.6, dmg: 30, xp: 600, gold: [300, 500], dropChance: 1 },
+  tiger: { name: 'Tiger Vanguard', hp: 5200, speed: 4.2, radius: 1.7, dmg: 42, xp: 1100, gold: [600, 900], dropChance: 1 },
+  bonelady: { name: 'Pale Bone Lady', hp: 7000, speed: 3.6, radius: 1.5, dmg: 52, xp: 1800, gold: [900, 1400], dropChance: 1 },
 };
 
 /**
@@ -169,7 +175,7 @@ export abstract class Enemy {
   onHit(dir: { x: number; z: number }, knock: number) {
     this.flash = 0.12;
     this.squash = 1;
-    const resist = this.isBoss ? 0.05 : this.kind === 'armored' ? 0.35 : 1;
+    const resist = this.isBoss ? 0.05 : this.kind === 'armored' ? 0.35 : this.kind === 'bone' ? 0.6 : 1;
     this.knock.x += dir.x * knock * 6 * resist;
     this.knock.y += dir.z * knock * 6 * resist;
     this.barVisible = true;
@@ -580,19 +586,60 @@ abstract class Humanoid extends Enemy {
 // Undead monk: rises from the earth, shambles in and rakes with its claws
 // ---------------------------------------------------------------------------
 
-const MONK_ATTACKS = [clipWin('zScratch', 0.05, 1.6, 0.61), clipWin('zBite', 0.0, 1.3, 0.39)];
+interface BrawlerDef {
+  build: () => TailedRig;
+  loco: Locomotion;
+  attacks: (Clip & { lunge?: number })[];
+  scale: [number, number];
+  rate: [number, number];
+  reach: number;
+  spawn: Clip | null;
+  sound: 'bite' | 'swing';
+}
+
 const MONK_SPAWN = clipWin('zSpawn', 0.0, 2.8);
 let monkVariant = 0;
 
+const BRAWLERS: Record<'ghoul' | 'wolf' | 'bone', BrawlerDef> = {
+  ghoul: {
+    build: () => ({ character: buildMonk(monkVariant++), tail: new THREE.Group() }),
+    loco: { idle: 'zIdle', moves: [{ name: 'zWalk', speed: 1.3 }, { name: 'zRun', speed: 3.4 }] },
+    attacks: [clipWin('zScratch', 0.05, 1.6, 0.61), clipWin('zBite', 0.0, 1.3, 0.39)],
+    scale: [0.95, 1.05], rate: [1.15, 1.35], reach: 2.2, spawn: MONK_SPAWN, sound: 'bite',
+  },
+  // Wolves run fast and pounce: a lunging dash, then a quick slash.
+  wolf: {
+    build: buildWolf,
+    loco: { idle: 'zIdle', moves: [{ name: 'zWalk', speed: 1.8 }, { name: 'zRun', speed: 3.6 }] },
+    attacks: [{ ...clipWin('dash', 0.0, 0.9, 0.3), lunge: 7 }, { ...clipWin('slashA', 0.05, 0.43, 0.24), lunge: 3 }],
+    scale: [0.9, 1.0], rate: [1.3, 1.5], reach: 2.6, spawn: null, sound: 'bite',
+  },
+  bone: {
+    build: buildBoneSoldier,
+    loco: { idle: 'swordIdle', moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.4 }] },
+    attacks: [clipWin('combo1', 0.02, 0.37, 0.19), clipWin('slashB', 0.0, 0.53, 0.26), { ...clipWin('heavyA', 0.02, 0.73, 0.47), lunge: 3 }],
+    scale: [1.0, 1.08], rate: [0.7, 0.85], reach: 2.5, spawn: null, sound: 'swing',
+  },
+};
+
 export class Ghoul extends Humanoid {
   private state: 'spawn' | 'chase' | 'attack' | 'recover' = 'spawn';
-  private attack = MONK_ATTACKS[0];
+  private attack: Clip & { lunge?: number };
   private attackHit = false;
   private tele: { cancel: () => void } | null = null;
-  private readonly rate = rand(1.15, 1.35);
+  private readonly rate: number;
+  private readonly bd: BrawlerDef;
+  private readonly tailG: THREE.Group;
 
-  constructor(game: Game, level: number, at: THREE.Vector3) {
-    super(game, 'ghoul', level, at, buildMonk(monkVariant++), { idle: 'zIdle', moves: [{ name: 'zWalk', speed: 1.3 }, { name: 'zRun', speed: 3.4 }] }, rand(0.95, 1.05));
+  constructor(game: Game, level: number, at: THREE.Vector3, kind: 'ghoul' | 'wolf' | 'bone' = 'ghoul') {
+    const bd = BRAWLERS[kind];
+    const rig = bd.build();
+    super(game, kind, level, at, rig.character, bd.loco, rand(bd.scale[0], bd.scale[1]));
+    this.bd = bd;
+    this.tailG = rig.tail;
+    this.attack = bd.attacks[0];
+    this.rate = rand(bd.rate[0], bd.rate[1]);
+    if (!bd.spawn) this.state = 'chase';
     game.vfx.dustBurst(at, 10, 0.8);
   }
 
@@ -618,7 +665,7 @@ export class Ghoul extends Humanoid {
     switch (this.state) {
       case 'spawn':
         this.yaw = toYaw;
-        this.play(MONK_SPAWN, this.st / 1.7, 0);
+        this.play(this.bd.spawn!, this.st / 1.7, 0);
         if (this.st >= 1.7) this.setState('chase');
         break;
       case 'chase':
@@ -626,11 +673,11 @@ export class Ghoul extends Humanoid {
         if (!player.alive) break;
         this.yaw = approachAngle(this.yaw, toYaw, dt * 6);
         want = d > 1.6 ? this.def.speed : 0;
-        if (d < 2.1 + player.radius) {
-          this.attack = MONK_ATTACKS[Math.random() < 0.65 ? 0 : 1];
+        if (d < this.bd.reach - 0.1 + player.radius) {
+          this.attack = this.bd.attacks[Math.floor(Math.random() * this.bd.attacks.length)];
           this.setState('attack');
           const lead = (this.attack.hit - this.attack.from) / this.rate;
-          this.tele = this.game.vfx.telegraph(this.pos, 2.2, lead + 0.05, { yaw: this.yaw, halfAngle: 0.8 });
+          this.tele = this.game.vfx.telegraph(this.pos, this.bd.reach, lead + 0.05, { yaw: this.yaw, halfAngle: 0.8 });
         }
         break;
       case 'attack': {
@@ -640,13 +687,14 @@ export class Ghoul extends Humanoid {
         const hitK = (a.hit - a.from) / (a.to - a.from);
         if (k < hitK) this.yaw = approachAngle(this.yaw, toYaw, dt * 3);
         this.play(a, k, 0.08);
-        if (k < hitK + 0.05) { this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), k > hitK - 0.15 ? 3.5 : 0); want = -1; }
+        const lunge = a.lunge ?? 3.5;
+        if (k < hitK + 0.05) { this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), k > hitK - 0.2 ? lunge : 0); want = -1; }
         if (!this.attackHit && k >= hitK) {
           this.attackHit = true;
           this.tele = null;
           const da = Math.abs(wrapAngle(toYaw - this.yaw));
-          if (d < 2.2 + player.radius && da < 1.1) player.hurt(this.dmg, this.pos);
-          this.game.audio.play('bite');
+          if (d < this.bd.reach + player.radius && da < 1.1) player.hurt(this.dmg, this.pos);
+          this.game.audio.play(this.bd.sound);
         }
         if (k >= 0.82) this.setState('recover');
         break;
@@ -656,6 +704,7 @@ export class Ghoul extends Humanoid {
         break;
     }
     if (want >= 0) this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), want);
+    this.tailG.rotation.y = Math.sin(this.game.time * 3 + this.pos.x) * 0.3;
     this.step(dt);
   }
 
@@ -670,18 +719,24 @@ export class Ghoul extends Humanoid {
 // ---------------------------------------------------------------------------
 
 const WEAVER_CAST = clipWin('cast', 0.0, 0.5, 0.25);
+const ARCHER_SHOOT = clipWin('bowShoot', 0.0, 1.0, 0.45);
+
+type CasterKind = 'weaver' | 'archer' | 'frost';
 
 export class Weaver extends Humanoid {
   private state: 'spawn' | 'chase' | 'shoot' | 'recover' = 'spawn';
   private shootCd = rand(1, 2.5);
   private strafe = Math.random() < 0.5 ? 1 : -1;
   private shot = false;
-  private readonly rig: WeaverRig;
+  private readonly rig: TailedRig | WeaverRig;
+  private readonly ck: CasterKind;
 
-  constructor(game: Game, level: number, at: THREE.Vector3) {
-    const rig = buildWeaver();
-    super(game, 'weaver', level, at, rig.character, { idle: 'idle', moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }] }, 1.02);
+  constructor(game: Game, level: number, at: THREE.Vector3, kind: CasterKind = 'weaver') {
+    const rig = kind === 'weaver' ? buildWeaver() : kind === 'archer' ? buildArcher() : buildFrostWitch();
+    const loco = kind === 'archer' ? { idle: 'bowAim', moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }] } : { idle: 'idle', moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }] };
+    super(game, kind, level, at, rig.character, loco, 1.02);
     this.rig = rig;
+    this.ck = kind;
     game.vfx.dustBurst(at, 8, 0.8);
   }
 
@@ -715,29 +770,37 @@ export class Weaver extends Humanoid {
         if (this.shootCd <= 0 && d < 12 && this.game.player.alive) { this.state = 'shoot'; this.st = 0; this.shot = false; }
         break;
       }
-      case 'shoot':
+      case 'shoot': {
         this.yaw = approachAngle(this.yaw, toYaw, dt * 10);
-        this.play(WEAVER_CAST, this.st / 0.8, 0.08);
-        if (!this.shot && this.st >= 0.4) {
+        const c = this.ck === 'archer' ? ARCHER_SHOOT : WEAVER_CAST;
+        const len = this.ck === 'archer' ? 1.0 : 0.8;
+        this.play(c, this.st / len, 0.08);
+        if (!this.shot && this.st >= (c.hit - c.from) / (c.to - c.from) * len) {
           this.shot = true;
           this.shootCd = rand(2, 3);
-          this.game.spawnWeb(this.pos, this.yaw, this.dmg);
+          if (this.ck === 'archer') {
+            // A fan of three arrows.
+            for (const off of [-0.12, 0, 0.12]) this.game.spawnFeather(this.pos, this.yaw + off, this.dmg * 0.5);
+          } else this.game.spawnWeb(this.pos, this.yaw, this.dmg);
         }
-        if (this.st >= 0.8) { this.state = 'chase'; this.st = 0; }
+        if (this.st >= len) { this.state = 'chase'; this.st = 0; }
         break;
+      }
       case 'recover':
         if (this.st >= 0.5) { this.state = 'chase'; this.st = 0; }
         break;
     }
     this.walk(dt, dirX, dirZ, want);
     // Spider legs creep and twitch; they flare open when she casts.
-    const t = this.game.time;
-    const open = this.state === 'shoot' ? 0.35 : 0;
-    this.rig.legs.forEach((l, i) => {
-      const b = l.userData.base as THREE.Euler;
-      l.rotation.x = b.x + Math.sin(t * (3 + this.speedNow) + i * 1.3) * 0.18 - open;
-      l.rotation.y = b.y + Math.sin(t * 2 + i) * 0.08;
-    });
+    if ('legs' in this.rig) {
+      const t = this.game.time;
+      const open = this.state === 'shoot' ? 0.35 : 0;
+      this.rig.legs.forEach((l, i) => {
+        const b = l.userData.base as THREE.Euler;
+        l.rotation.x = b.x + Math.sin(t * (3 + this.speedNow) + i * 1.3) * 0.18 - open;
+        l.rotation.y = b.y + Math.sin(t * 2 + i) * 0.08;
+      });
+    }
     this.step(dt);
   }
 }
@@ -756,7 +819,7 @@ const BOSS_BROKEN = clipWin('knockback', 0.0, 0.83);
 
 export class Boss extends Humanoid {
   readonly isBoss = true;
-  readonly rig: CrowRig;
+  readonly rig: BossRig;
   private state: BossState = 'intro';
   private cds = { sweep: 0, leap: 3, miasma: 6, barrage: 4 };
   private summoned = [false, false];
@@ -767,9 +830,15 @@ export class Boss extends Humanoid {
   private flapPhase = 0;
   private enraged = false;
 
-  constructor(game: Game, level: number, at: THREE.Vector3) {
-    const rig = buildCrowLord();
-    super(game, 'boss', level, at, rig.character, { idle: 'swordIdle', moves: [{ name: 'walk', speed: 3.0 }, { name: 'jog', speed: 7.2 }] }, 2.0);
+  constructor(game: Game, level: number, at: THREE.Vector3, kind: 'boss' | 'tiger' | 'bonelady' = 'boss') {
+    let rig: BossRig;
+    if (kind === 'tiger') rig = buildTiger();
+    else if (kind === 'bonelady') rig = buildBoneLady();
+    else {
+      const c = buildCrowLord();
+      rig = { character: c.character, wingL: c.wingL, wingR: c.wingR, accent: COLORS.jade, accentHot: COLORS.jadeHot, summon: 'spiderling' };
+    }
+    super(game, kind, level, at, rig.character, { idle: 'swordIdle', moves: [{ name: 'walk', speed: 3.0 }, { name: 'jog', speed: 7.2 }] }, kind === 'tiger' ? 2.15 : 2.0);
     this.rig = rig;
     this.hitPose = BOSS_BROKEN;
     this.deathClip = clipWin('death', 0, 2.35);
@@ -816,7 +885,7 @@ export class Boss extends Humanoid {
       this.enraged = true;
       this.ch.mats.glow.color.setHex(0xd8ff60);
       this.game.audio.play('roar');
-      this.game.hud.toast('The Blackfeather Lord is enraged!', '#9cff6a');
+      this.game.hud.toast(`${this.def.name} is enraged!`, '#ffb06a');
       this.game.camRig.shake(0.5, 0.6);
     }
     for (let i = 0; i < 2; i++) {
@@ -834,7 +903,7 @@ export class Boss extends Humanoid {
         this.yaw = toYaw;
         if (k >= 1 && !this.didHit) {
           this.didHit = true;
-          this.game.vfx.shockwave(this.pos, 9, COLORS.jade, 0.8, 0.2);
+          this.game.vfx.shockwave(this.pos, 9, this.rig.accent, 0.8, 0.2);
           this.game.vfx.dustBurst(this.pos, 30, 3);
           this.game.debris.burst(this.pos, 0x5e5a52, 12, 0.2, 1.3);
           this.game.camRig.shake(0.8, 0.6);
@@ -878,7 +947,7 @@ export class Boss extends Humanoid {
           this.didHit = true;
           this.lift.position.y = 0;
           if (Math.hypot(player.pos.x - this.pos.x, player.pos.z - this.pos.z) < 4.2 + player.radius) player.hurt(this.dmg * 1.4, this.pos);
-          this.game.vfx.shockwave(this.pos, 5, COLORS.jade, 0.5, 0.2);
+          this.game.vfx.shockwave(this.pos, 5, this.rig.accent, 0.5, 0.2);
           this.game.vfx.shockwave(this.pos, 3, COLORS.red, 0.35);
           this.game.vfx.dustBurst(this.pos, 26, 2.5);
           this.game.debris.burst(this.pos, 0x5e5a52, 10, 0.2, 1.3);
@@ -892,7 +961,7 @@ export class Boss extends Humanoid {
         if (!this.didHit && this.st >= 1.2) {
           this.didHit = true;
           for (const p of this.miasmaPts) {
-            this.game.vfx.shockwave(p, 3, COLORS.jade, 0.4);
+            this.game.vfx.shockwave(p, 3, this.rig.accent, 0.4);
             this.game.addHazard(p, 2.6, 5, this.dmg * 0.35, 'enemy');
             if (Math.hypot(player.pos.x - p.x, player.pos.z - p.z) < 2.6) player.hurt(this.dmg * 0.6, p);
           }
@@ -904,14 +973,14 @@ export class Boss extends Humanoid {
       case 'summon': {
         if (!this.didHit && this.st >= 0.9) {
           this.didHit = true;
-          this.game.vfx.shockwave(this.pos, 7, COLORS.jade, 0.7);
+          this.game.vfx.shockwave(this.pos, 7, this.rig.accent, 0.7);
           this.game.audio.play('roar');
           for (let i = 0; i < 5; i++) {
             const a = (i / 5) * Math.PI * 2;
             const p = new THREE.Vector3(this.pos.x + Math.sin(a) * 4, 0, this.pos.z + Math.cos(a) * 4);
             if (this.game.level.isWalkable(p.x, p.z, 0.6)) {
               p.y = this.game.level.heightAt(p.x, p.z);
-              this.game.spawnEnemy('spiderling', this.level - 1, p);
+              this.game.spawnEnemy(this.rig.summon, this.level - 1, p);
             }
           }
         }
@@ -1023,20 +1092,20 @@ export class Boss extends Humanoid {
     // Wings: slow breathing beats, fast flaps when airborne or casting.
     this.flapPhase += dt * (this.state === 'leap' || this.state === 'intro' || this.state === 'barrage' ? 9 : 2.5);
     const flap = Math.sin(this.flapPhase) * (this.state === 'barrage' || this.state === 'leap' ? 0.55 : 0.2);
-    this.rig.wingL.rotation.y = 0.45 + flap;
-    this.rig.wingR.rotation.y = -0.45 - flap;
+    if (this.rig.wingL) this.rig.wingL.rotation.y = 0.45 + flap;
+    if (this.rig.wingR) this.rig.wingR.rotation.y = -0.45 - flap;
     this.step(dt);
     if (this.enraged && Math.random() < 0.3) {
-      this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 3, this.pos.z, { count: 1, radius: 1.5, speed: [0, 0.5], up: [1, 3], gravity: -1, life: [0.5, 1], color: COLORS.jade, color2: COLORS.jadeHot, size: [0.3, 0.6] });
+      this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 3, this.pos.z, { count: 1, radius: 1.5, speed: [0, 0.5], up: [1, 3], gravity: -1, life: [0.5, 1], color: this.rig.accent, color2: this.rig.accentHot, size: [0.3, 0.6] });
     }
   }
 
   protected animateDeath(dt: number) {
     this.play(this.deathClip, this.deadTime / 1.6, 0.15);
     this.anim.update(dt, 0);
-    this.rig.wingL.rotation.y += (1.3 - this.rig.wingL.rotation.y) * damp(2, dt);
-    this.rig.wingR.rotation.y += (-1.3 - this.rig.wingR.rotation.y) * damp(2, dt);
-    if (Math.random() < 0.5) this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 1.5, this.pos.z, { count: 3, radius: 2, speed: [0, 2], up: [2, 6], gravity: -1, life: [0.6, 1.2], color: COLORS.jade, color2: COLORS.jadeHot, size: [0.3, 0.6] });
+    if (this.rig.wingL) this.rig.wingL.rotation.y += (1.3 - this.rig.wingL.rotation.y) * damp(2, dt);
+    if (this.rig.wingR) this.rig.wingR.rotation.y += (-1.3 - this.rig.wingR.rotation.y) * damp(2, dt);
+    if (Math.random() < 0.5) this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 1.5, this.pos.z, { count: 3, radius: 2, speed: [0, 2], up: [2, 6], gravity: -1, life: [0.6, 1.2], color: this.rig.accent, color2: this.rig.accentHot, size: [0.3, 0.6] });
     if (this.deadTime > 1.8) this.root.position.y -= dt * 1.5;
     this.deadTime = Math.min(this.deadTime, 2.1); // keep the corpse until the victory screen
   }

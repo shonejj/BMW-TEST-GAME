@@ -523,3 +523,323 @@ export function buildCrowLord(): CrowRig {
   };
   return { character: ch, wingL: wing(1), wingR: wing(-1) };
 }
+
+// ---------------------------------------------------------------------------
+// Chapter 2 and 3 enemies
+// ---------------------------------------------------------------------------
+
+const phong = (color: number, shin = 40, spec = 0x555555) => withRim(new THREE.MeshPhongMaterial({ color, shininess: shin, specular: spec }), 0.4);
+
+/** A weapon built along +Z in the fist (like the hero's staff), parented to hand_r or hand_l. */
+function heldItem(ch: Character, bone: 'hand_r' | 'hand_l', build: (g: THREE.Group) => void) {
+  const g = new THREE.Group();
+  build(g);
+  const hp = ch.rest.pos(bone);
+  g.position.copy(hp).add(V(bone === 'hand_r' ? -0.08 : 0.08, 0, 0));
+  g.traverse((o) => ((o as THREE.Mesh).castShadow = true));
+  ch.attach(bone, g);
+  return g;
+}
+
+// --- Wolf Guai: fast, feral, grey-furred ------------------------------------------------------
+
+const wolfPainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 45, p.y * 45, p.z * 45);
+  if (isHand(bone)) c.setHex(0x2a2220);
+  else if (bone === 'pelvis' || bone.startsWith('thigh') || bone.startsWith('calf') || bone.startsWith('foot')) c.setHex(0x5a5048).multiplyScalar(0.8 + 0.25 * n);
+  else if (bone.startsWith('spine') && p.z > 0) c.setHex(0x9a9082).multiplyScalar(0.85 + 0.2 * n);
+  else c.setHex(0x6a6258).multiplyScalar(0.75 + 0.35 * n);
+};
+
+function wolfDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  const fur = mottle(0x6a6258, 0x2a2622, 0.3, 50);
+  o.put('Head', tint(roughen(new THREE.SphereGeometry(1, 18, 12).scale(hx * 1.2, hy * 1.0, hz * 1.1), 0.01, 50), fur), 'matte', null, hc.x, hc.y + hy * 0.05, hc.z - hz * 0.1);
+  // Long snout, black nose, fangs.
+  o.put('Head', tint(new THREE.CylinderGeometry(hx * 0.5, hx * 0.75, hz * 2.0, 10).rotateX(Math.PI / 2).scale(1, 0.85, 1), mottle(0x8a8478, 0x3a362e, 0.2)), 'matte', null, hc.x, hc.y - hy * 0.3, hc.z + hz * 1.2);
+  o.put('Head', new THREE.SphereGeometry(hx * 0.3, 8, 6), 'matte', 0x120e0c, hc.x, hc.y - hy * 0.12, hc.z + hz * 2.2);
+  for (const sx of [-1, 1]) {
+    o.put('Head', new THREE.ConeGeometry(hx * 0.1, hz * 0.5, 5).rotateX(Math.PI), 'matte', 0xf0ead8, hc.x + sx * hx * 0.38, hc.y - hy * 0.62, hc.z + hz * 1.85);
+    o.put('Head', tint(new THREE.ConeGeometry(hx * 0.4, hy * 1.1, 5), fur), 'matte', null, hc.x + sx * hx * 0.7, hc.y + hy * 1.15, hc.z - hz * 0.2, 0, 0, -sx * 0.25);
+    o.put('Head', new THREE.SphereGeometry(hz * 0.13, 10, 8), 'glow', 0xffd23a, hc.x + sx * hx * 0.5, hc.y + hy * 0.2, hc.z + hz * 0.8);
+  }
+  // Shaggy mane and shoulder fur.
+  const neck = r.pos('neck_01');
+  const tuft = roughen(new THREE.ConeGeometry(0.06, 0.26, 6, 2), 0.01, 70);
+  for (let i = 0; i < 20; i++) {
+    const a = (i / 20) * Math.PI * 2;
+    o.put('spine_03', tint(tuft.clone(), mottle(0x8a8478, 0x2a2622, 0.3, 40)), 'matte', null, neck.x + Math.sin(a) * 0.2, neck.y - 0.05, neck.z + Math.cos(a) * 0.15, Math.PI + Math.cos(a) * 0.6, 0, -Math.sin(a) * 0.6);
+  }
+  for (const side of ['l', 'r'] as const) {
+    const lp = r.pos(`lowerarm_${side}`), sx = side === 'l' ? 1 : -1;
+    o.put(`lowerarm_${side}`, new THREE.CylinderGeometry(0.05, 0.045, 0.2, 10).rotateZ(Math.PI / 2), 'armor', 0xffffff, lp.x + sx * 0.12, lp.y, lp.z);
+    const hp = r.pos(`hand_${side}`);
+    for (let k = 0; k < 3; k++) o.put(`hand_${side}`, new THREE.ConeGeometry(0.012, 0.1, 5).rotateZ(-sx * Math.PI / 2), 'matte', 0xe8e0c8, hp.x + sx * 0.12, hp.y - 0.025 + k * 0.025, hp.z + 0.01);
+  }
+  kilt(o, { top: waist - 0.02, hem: 0.5, radius: Math.max(pw, pd) * 1.12, flare: 0.06, z: pz * 0.5, panels: 8, ragged: 0.07, color: (p, c) => c.setHex(0x5a3a22).multiplyScalar(0.8 + 0.2 * hashNoise(p.x * 40, p.y * 40, p.z * 40)) });
+}
+
+export interface TailedRig { character: Character; tail: THREE.Group }
+
+export function buildWolf(): TailedRig {
+  const ch = buildCharacter('wolf', wolfPainter, wolfDesign);
+  const { waist, back } = pelvisFrame(ch.rest);
+  ch.mats.armor.color.setHex(0x4a3a2a);
+  const tail = new THREE.Group();
+  tail.position.set(0, waist - 0.1, back + 0.02);
+  tail.add(new THREE.Mesh(tint(roughen(taperedTube([V(0, 0, 0), V(0, -0.1, -0.2), V(0, -0.2, -0.5), V(0, -0.15, -0.75)], 0.07, 0.025, 14, 7), 0.01, 70), mottle(0x6a6258, 0x2a2622, 0.3, 40)), ch.mats.matte));
+  ch.attach('pelvis', tail);
+  return { character: ch, tail };
+}
+
+// --- Bone Soldier: rusted armour on a skeleton ------------------------------------------------
+
+const BONE = 0xd8d0b8;
+const bonePainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 40, p.y * 40, p.z * 40);
+  c.setHex(isHand(bone) ? 0xc8c0a8 : BONE).multiplyScalar(0.8 + 0.25 * n);
+  // Grooves at the joints.
+  if (/lowerarm|calf|thigh|upperarm/.test(bone) && Math.sin(p.y * 38 + p.x * 20) > 0.7) c.multiplyScalar(0.7);
+};
+
+function boneDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  // Skull: eye sockets with a cold glow, nasal hole, teeth row, rusted open-faced helmet.
+  for (const sx of [-1, 1]) {
+    o.put('Head', new THREE.SphereGeometry(hz * 0.2, 10, 8).scale(1, 1.1, 0.5), 'matte', 0x120e0a, hc.x + sx * hx * 0.38, hc.y + hy * 0.12, hc.z + hz * 0.92);
+    o.put('Head', new THREE.SphereGeometry(hz * 0.09, 8, 6), 'glow', 0x7affd8, hc.x + sx * hx * 0.38, hc.y + hy * 0.12, hc.z + hz * 0.98);
+  }
+  o.put('Head', new THREE.ConeGeometry(hz * 0.1, hz * 0.3, 3).rotateX(Math.PI), 'matte', 0x120e0a, hc.x, hc.y - hy * 0.2, hc.z + hz * 1.0);
+  for (let i = 0; i < 8; i++) o.put('Head', new THREE.BoxGeometry(hx * 0.12, hy * 0.18, hz * 0.08), 'matte', 0xf0e8d0, hc.x + (i - 3.5) * hx * 0.16, hc.y - hy * 0.55, hc.z + hz * 0.9);
+  o.put('Head', tint(new THREE.SphereGeometry(1, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55).scale(hx * 1.25, hy * 1.15, hz * 1.2), (p, c) => c.setHex(0x6a4a30).multiplyScalar(0.85 + 0.15 * Math.sin(p.x * 60))), 'metal', null, hc.x, hc.y + hy * 0.25, hc.z - hz * 0.05);
+  o.put('Head', new THREE.ConeGeometry(0.03, 0.16, 5), 'metal', 0x8a6a40, hc.x, hc.y + hy * 1.5, hc.z);
+  // Rib cage: bars across the chest, spine.
+  const s2 = r.boxes.get('spine_02')!, s3 = r.boxes.get('spine_03')!;
+  const cy = (s2.min.y + s3.max.y) / 2 - 0.05;
+  for (let i = 0; i < 5; i++) o.put('spine_03', new THREE.TorusGeometry(0.15 - Math.abs(i - 1) * 0.012, 0.012, 5, 14, Math.PI * 1.3).rotateZ(Math.PI * 0.35), 'matte', 0xe8e0c8, 0, cy + 0.14 - i * 0.065, 0.02, 0, 0, 0);
+  // Rusted pauldrons, breast plate scrap and belt, tattered green sash.
+  for (const side of ['l', 'r'] as const) {
+    const sx = side === 'l' ? 1 : -1;
+    const sp = r.pos(`upperarm_${side}`);
+    o.put(`upperarm_${side}`, new THREE.SphereGeometry(0.12, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5).scale(1.1, 0.8, 1.1), 'armor', 0xffffff, sp.x + sx * 0.03, sp.y + 0.05, sp.z, 0, 0, -sx * 0.5);
+  }
+  o.put('spine_03', new THREE.CylinderGeometry(0.17, 0.14, 0.18, 10, 1, true, -Math.PI / 2, Math.PI), 'armor', 0xffffff, 0, cy + 0.02, 0.06);
+  o.put('pelvis', band(pw * 1.1, pd * 1.25, 0.03), 'metal', 0x5a4a30, 0, waist, pz);
+  kilt(o, { top: waist - 0.02, hem: 0.32, radius: Math.max(pw, pd) * 1.1, flare: 0.09, z: pz * 0.5, panels: 8, ragged: 0.1, color: (p, c) => c.setHex(0x3a5a3a).multiplyScalar(0.7 + 0.3 * hashNoise(p.x * 40, p.y * 40, p.z * 40)) });
+}
+
+export function buildBoneSoldier(): TailedRig {
+  const ch = buildCharacter('bone', bonePainter, boneDesign);
+  ch.mats.armor.color.setHex(0x7a4a2a);
+  // Rusted longsword in the right hand, round shield on the left.
+  const blade = phong(0xa8a8a0, 90, 0xcccccc), guard = phong(0x6a4a2a);
+  heldItem(ch, 'hand_r', (g) => {
+    g.add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 0.95).translate(0, 0, 0.62), blade));
+    g.add(new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.03, 0.04).translate(0, 0, 0.14), guard));
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.2, 6).rotateX(Math.PI / 2), guard));
+  });
+  heldItem(ch, 'hand_l', (g) => {
+    const s = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.04, 14).rotateZ(Math.PI / 2), phong(0x5a3a22));
+    s.position.set(0.12, -0.02, 0.05);
+    g.add(s);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.018, 5, 18).rotateY(Math.PI / 2), phong(0x8a8a90, 80));
+    rim.position.copy(s.position);
+    g.add(rim);
+  });
+  return { character: ch, tail: new THREE.Group() };
+}
+
+// --- Wind Archer: hooded desert bandit ----------------------------------------------------------
+
+const archerPainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 30, p.y * 30, p.z * 30);
+  if (bone === 'Head' || bone === 'neck_01' || isHand(bone)) c.setHex(0xa8744a).multiplyScalar(0.9 + 0.1 * n);
+  else if (bone.startsWith('calf') || bone.startsWith('foot') || bone.startsWith('ball')) c.setHex(0x4a3420);
+  else c.setHex(0xb88a3a).multiplyScalar(0.8 + 0.25 * n);
+};
+
+function archerDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  // Hood and face scarf, glowing eyes in the shadow.
+  o.put('Head', tint(new THREE.SphereGeometry(1, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.72).rotateX(-0.2).scale(hx * 1.32, hy * 1.3, hz * 1.3), (p, c) => c.setHex(0x8a5a22).multiplyScalar(0.8 + 0.2 * Math.sin(p.y * 40))), 'cloth', null, hc.x, hc.y + hy * 0.15, hc.z - hz * 0.1);
+  o.put('Head', new THREE.CylinderGeometry(hx * 0.95, hx * 1.0, hy * 0.7, 14, 1, true).scale(1, 1, 1.1), 'cloth', 0x3a2a1a, hc.x, hc.y - hy * 0.5, hc.z + hz * 0.1);
+  for (const sx of [-1, 1]) o.put('Head', new THREE.SphereGeometry(hz * 0.1, 8, 6), 'glow', 0xffe060, hc.x + sx * hx * 0.38, hc.y + hy * 0.1, hc.z + hz * 0.8);
+  // Quiver across the back, leather chest straps, cloak.
+  const s3 = r.boxes.get('spine_03')!;
+  o.put('spine_03', new THREE.CylinderGeometry(0.05, 0.045, 0.5, 8), 'matte', 0x4a2a14, 0.06, (s3.min.y + s3.max.y) / 2, s3.min.z - 0.05, 0.2, 0, 0.25);
+  for (let i = 0; i < 3; i++) o.put('spine_03', new THREE.ConeGeometry(0.012, 0.1, 4), 'matte', 0xe8e0c8, 0.06 + i * 0.012, (s3.min.y + s3.max.y) / 2 + 0.3, s3.min.z - 0.07);
+  o.put('spine_03', new THREE.BoxGeometry(0.34, 0.04, 0.3).rotateZ(0.5), 'matte', 0x3a2414, 0, (s3.min.y + s3.max.y) / 2 - 0.02, 0.0);
+  o.put('pelvis', band(pw * 1.1, pd * 1.25, 0.03), 'cloth', 0x7a2a1a, 0, waist, pz);
+  kilt(o, { top: waist - 0.02, hem: 0.18, radius: Math.max(pw, pd) * 1.12, flare: 0.14, z: pz * 0.5, panels: 10, ragged: 0.08, color: (p, c) => c.setHex(p.y < 0.4 ? 0x7a4a1c : 0xb88a3a).multiplyScalar(0.8 + 0.2 * hashNoise(p.x * 40, p.y * 40, p.z * 40)) });
+}
+
+export function buildArcher(): TailedRig {
+  const ch = buildCharacter('archer', archerPainter, archerDesign);
+  // A recurve bow in the left hand: curved limb tube and bowstring.
+  heldItem(ch, 'hand_l', (g) => {
+    const limb = tint(taperedTube([V(0, 0, 0.55), V(0.12, 0, 0.3), V(0.16, 0, 0), V(0.12, 0, -0.3), V(0, 0, -0.55)], 0.028, 0.02, 20, 6), () => {});
+    g.add(new THREE.Mesh(limb, phong(0x6a3a1a, 20)));
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 1.1, 3).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xe8e0c8 })));
+  });
+  return { character: ch, tail: new THREE.Group() };
+}
+
+// --- Frost Witch: pale caster with an ice crown ------------------------------------------------
+
+const frostPainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 30, p.y * 30, p.z * 30);
+  if (bone === 'Head' || bone === 'neck_01' || bone.startsWith('lowerarm') || isHand(bone)) c.setHex(0xc8dcf0).multiplyScalar(0.92 + 0.1 * n);
+  else c.setHex(0x2a4a8a).multiplyScalar(0.8 + 0.25 * n);
+};
+
+function frostDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  // Long white hair and a crown of ice spikes.
+  o.put('Head', tint(roughen(new THREE.SphereGeometry(1, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.6).rotateX(-0.45).scale(hx * 1.18, hy * 1.1, hz * 1.15), 0.006, 60), mottle(0xeef4ff, 0xa8c0e0, 0.15, 50)), 'matte', null, hc.x, hc.y + hy * 0.2, hc.z - hz * 0.05);
+  o.put('Head', tint(taperedTube([V(0, 0, 0), V(0, -0.2, -0.1), V(0, -0.5, -0.12), V(0, -0.85, -0.05)], 0.12, 0.03, 14, 8), mottle(0xeef4ff, 0xa8c0e0, 0.15, 40)), 'matte', null, hc.x, hc.y + hy * 0.3, hc.z - hz * 0.8);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 6 - 0.5) * Math.PI * 0.95;
+    o.put('Head', new THREE.ConeGeometry(0.022, 0.16 + (i === 3 ? 0.1 : 0), 4), 'glow', 0x9af0ff, hc.x + Math.sin(a) * hx * 1.15, hc.y + hy * 0.95, hc.z + Math.cos(a) * hz * 0.5, 0, 0, -a * 0.3);
+  }
+  for (const sx of [-1, 1]) o.put('Head', new THREE.SphereGeometry(hz * 0.1, 8, 6), 'glow', 0x9af0ff, hc.x + sx * hx * 0.38, hc.y + hy * 0.05, hc.z + hz * 0.85);
+  // Frost-lace collar and flowing icy robe.
+  const neck = r.pos('neck_01');
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 8 - 0.5) * Math.PI * 1.5;
+    o.put('spine_03', new THREE.ConeGeometry(0.025, 0.14, 4), 'matte', 0xdcecff, neck.x + Math.sin(a) * 0.16, neck.y + 0.0, neck.z - Math.cos(a) * 0.1, -Math.cos(a) * 0.5, 0, -Math.sin(a) * 0.6);
+  }
+  o.put('pelvis', band(pw * 1.1, pd * 1.25, 0.03), 'metal', 0x9ac8f0, 0, waist, pz);
+  kilt(o, { top: waist - 0.02, hem: 0.02, radius: Math.max(pw, pd) * 1.1, flare: 0.22, z: pz * 0.5, panels: 12, ragged: 0.06, color: (p, c) => c.setHex(0x2a4a8a).lerp(new THREE.Color(0xdcecff), THREE.MathUtils.clamp(1 - p.y / 0.9, 0, 1) * 0.85) });
+}
+
+export function buildFrostWitch(): TailedRig {
+  const ch = buildCharacter('frost', frostPainter, frostDesign);
+  heldItem(ch, 'hand_r', (g) => {
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 1.6, 8).rotateX(Math.PI / 2).translate(0, 0, 0.5), phong(0xdcecff, 70, 0xffffff)));
+    g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.12, 0).scale(0.7, 0.7, 1.5).translate(0, 0, 1.4), new THREE.MeshBasicMaterial({ color: 0x9af0ff })));
+  });
+  return { character: ch, tail: new THREE.Group() };
+}
+
+// --- Chapter bosses -----------------------------------------------------------------------------
+
+const tigerPainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 40, p.y * 40, p.z * 40);
+  if (isHand(bone)) { c.setHex(0xd8902a); return; }
+  const stripe = Math.sin(p.y * 42 + Math.sin(p.x * 18) * 2.2) > 0.55;
+  if (bone.startsWith('spine') && p.z > 0.05) c.setHex(0xe8dcc0);
+  else c.setHex(stripe ? 0x2a1608 : 0xd8822a).multiplyScalar(0.9 + 0.12 * n);
+};
+
+function tigerDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  const fur = (p: THREE.Vector3, c: THREE.Color) => c.setHex(Math.sin(p.y * 50 + p.x * 20) > 0.5 ? 0x2a1608 : 0xd8822a).multiplyScalar(0.9 + 0.12 * hashNoise(p.x * 40, p.y * 40, p.z * 40));
+  o.put('Head', tint(roughen(new THREE.SphereGeometry(1, 20, 14).scale(hx * 1.3, hy * 1.05, hz * 1.15), 0.01, 50), fur), 'matte', null, hc.x, hc.y + hy * 0.05, hc.z - hz * 0.05);
+  o.put('Head', new THREE.CylinderGeometry(hx * 0.55, hx * 0.7, hz * 1.2, 12).rotateX(Math.PI / 2).scale(1.1, 0.8, 1), 'matte', 0xe8dcc0, hc.x, hc.y - hy * 0.35, hc.z + hz * 0.95);
+  o.put('Head', new THREE.SphereGeometry(hx * 0.2, 8, 6), 'matte', 0x1a0a08, hc.x, hc.y - hy * 0.18, hc.z + hz * 1.55);
+  for (const sx of [-1, 1]) {
+    o.put('Head', new THREE.SphereGeometry(hx * 0.4, 10, 8).scale(1, 1, 0.5), 'matte', 0xd8822a, hc.x + sx * hx * 0.85, hc.y + hy * 0.95, hc.z - hz * 0.1);
+    o.put('Head', new THREE.ConeGeometry(hx * 0.09, hz * 0.55, 5).rotateX(Math.PI), 'matte', 0xfff4d8, hc.x + sx * hx * 0.4, hc.y - hy * 0.7, hc.z + hz * 1.35);
+    o.put('Head', new THREE.SphereGeometry(hz * 0.13, 10, 8), 'glow', 0xffe040, hc.x + sx * hx * 0.55, hc.y + hy * 0.18, hc.z + hz * 0.82);
+  }
+  // Heavy gilded armour: breastplate, huge pauldrons, belt.
+  const s2 = r.boxes.get('spine_02')!, s3 = r.boxes.get('spine_03')!;
+  const cw = (s2.max.x - s2.min.x) / 2, cy = (s2.min.y + s3.max.y) / 2 - 0.05;
+  o.put('spine_03', new THREE.CylinderGeometry(1, 0.92, 0.3, 24, 1, true).scale(cw * 1.18, 1, 0.17), 'metal', 0x3a2a1a, 0, cy, -0.02);
+  o.put('spine_03', band(cw * 1.19, 0.175, 0.016), 'metal', 0xe0b040, 0, cy + 0.15, -0.02);
+  o.put('spine_03', new THREE.CylinderGeometry(0.07, 0.07, 0.02, 20).rotateX(Math.PI / 2), 'metal', 0xe0b040, 0, cy + 0.04, 0.18);
+  for (const side of ['l', 'r'] as const) {
+    const sx = side === 'l' ? 1 : -1;
+    const sp = r.pos(`upperarm_${side}`);
+    for (let k = 0; k < 3; k++) o.put(`upperarm_${side}`, new THREE.SphereGeometry(0.15 - k * 0.012, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45).scale(1, 0.8, 1.1), k === 1 ? 'metal' : 'armor', k === 1 ? 0xe0b040 : 0xffffff, sp.x + sx * (0.02 + k * 0.05), sp.y + 0.06 - k * 0.03, sp.z, 0, 0, -sx * (0.5 + k * 0.12));
+    const lp = r.pos(`lowerarm_${side}`);
+    o.put(`lowerarm_${side}`, new THREE.CylinderGeometry(0.058, 0.05, 0.22, 14).rotateZ(Math.PI / 2), 'armor', 0xffffff, lp.x + sx * 0.13, lp.y, lp.z);
+  }
+  o.put('pelvis', band(pw * 1.1, pd * 1.3, 0.035), 'metal', 0xe0b040, 0, waist, pz);
+  kilt(o, { top: waist - 0.02, hem: 0.12, radius: Math.max(pw, pd) * 1.15, flare: 0.16, z: pz * 0.5, panels: 12, ragged: 0.05, color: (p, c) => c.setHex(p.y < 0.2 ? 0xe0b040 : 0x7a1a14).multiplyScalar(0.85 + 0.15 * Math.sin(p.y * 70)) });
+}
+
+export interface BossRig { character: Character; wingL: THREE.Group | null; wingR: THREE.Group | null; accent: number; accentHot: number; summon: SpawnKindName }
+type SpawnKindName = 'spiderling' | 'wolf' | 'bone';
+
+export function buildTiger(): BossRig {
+  const ch = buildCharacter('tiger', tigerPainter, tigerDesign);
+  ch.mats.armor.color.setHex(0x7a1a14);
+  // Guandao: long pole and a broad curved blade.
+  heldItem(ch, 'hand_r', (g) => {
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 2.2, 8).rotateX(Math.PI / 2).translate(0, 0, 0.6), phong(0x3a2414, 25)));
+    const bladeShape = new THREE.Shape();
+    bladeShape.moveTo(0, 0); bladeShape.quadraticCurveTo(0.34, 0.2, 0.18, 0.95); bladeShape.lineTo(0.02, 0.8); bladeShape.lineTo(0, 0);
+    const bg = new THREE.ExtrudeGeometry(bladeShape, { depth: 0.025, bevelEnabled: false }).rotateY(Math.PI / 2).rotateX(-Math.PI / 2).translate(0, 0, 1.62);
+    g.add(new THREE.Mesh(bg, phong(0xc8ccd4, 110, 0xffffff)));
+    g.add(new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.012, 6, 14), phong(0xe0b040, 90, 0xffe0a0)).translateZ(1.6));
+    g.add(new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), phong(0xe0b040, 90)).translateZ(-0.5));
+  });
+  return { character: ch, wingL: null, wingR: null, accent: 0xff9a30, accentHot: 0xffe090, summon: 'wolf' };
+}
+
+const ladyPainter: BodyPainter = (bone, p, c) => {
+  const n = hashNoise(p.x * 40, p.y * 40, p.z * 40);
+  if (bone === 'Head' || bone === 'neck_01' || bone.startsWith('lowerarm') || isHand(bone)) c.setHex(0xe8e4d4).multiplyScalar(0.88 + 0.15 * n);
+  else c.setHex(0x2a3a5a).multiplyScalar(0.8 + 0.25 * n);
+};
+
+function ladyDesign(o: Outfit, r: Rest) {
+  const { c: hc, hx, hz, hy } = headFrame(r);
+  const { pw, pd, waist, cz: pz } = pelvisFrame(r);
+  // Skull-like face with tall antler crown and long grey hair-tendrils.
+  for (const sx of [-1, 1]) {
+    o.put('Head', new THREE.SphereGeometry(hz * 0.2, 10, 8).scale(1, 1.1, 0.5), 'matte', 0x0a1020, hc.x + sx * hx * 0.38, hc.y + hy * 0.1, hc.z + hz * 0.92);
+    o.put('Head', new THREE.SphereGeometry(hz * 0.09, 8, 6), 'glow', 0x9af0ff, hc.x + sx * hx * 0.38, hc.y + hy * 0.1, hc.z + hz * 0.98);
+  }
+  o.put('Head', tint(roughen(new THREE.SphereGeometry(1, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.55).rotateX(-0.5).scale(hx * 1.2, hy * 1.1, hz * 1.15), 0.006, 60), mottle(0xcfd6e6, 0x6a7a96, 0.2, 50)), 'matte', null, hc.x, hc.y + hy * 0.25, hc.z - hz * 0.05);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 5 - 0.5) * 1.6;
+    o.put('Head', taperedTube([V(0, 0, 0), V(Math.sin(a) * 0.12, 0.22, -0.02), V(Math.sin(a) * 0.3, 0.42, -0.04), V(Math.sin(a) * 0.46, 0.5 + (i % 2) * 0.1, -0.04)], 0.024, 0.006, 12, 5), 'matte', 0xe8e0c8, hc.x + Math.sin(a) * hx * 0.5, hc.y + hy * 0.9, hc.z - hz * 0.1);
+  }
+  for (let i = 0; i < 5; i++) o.put('Head', tint(taperedTube([V(0, 0, 0), V((i - 2) * 0.05, -0.25, -0.1), V((i - 2) * 0.1, -0.6, -0.1), V((i - 2) * 0.12, -1.0, -0.04)], 0.045, 0.008, 14, 6), mottle(0xcfd6e6, 0x6a7a96, 0.2, 40)), 'matte', null, hc.x + (i - 2) * 0.05, hc.y + hy * 0.3, hc.z - hz * 0.8);
+  // Rib-cage bodice, bone shoulder spikes, frozen gown.
+  const s2 = r.boxes.get('spine_02')!, s3 = r.boxes.get('spine_03')!;
+  const cy = (s2.min.y + s3.max.y) / 2 - 0.05;
+  for (let i = 0; i < 5; i++) o.put('spine_03', new THREE.TorusGeometry(0.16 - Math.abs(i - 1) * 0.012, 0.014, 5, 14, Math.PI * 1.3).rotateZ(Math.PI * 0.35), 'matte', 0xf0ecdc, 0, cy + 0.14 - i * 0.07, 0.03);
+  for (const side of ['l', 'r'] as const) {
+    const sx = side === 'l' ? 1 : -1;
+    const sp = r.pos(`upperarm_${side}`);
+    for (let k = 0; k < 3; k++) o.put(`upperarm_${side}`, new THREE.ConeGeometry(0.035, 0.26 - k * 0.04, 5), 'matte', 0xe8e0c8, sp.x + sx * (0.04 + k * 0.06), sp.y + 0.12, sp.z, 0, 0, -sx * (0.5 + k * 0.3));
+  }
+  o.put('pelvis', band(pw * 1.1, pd * 1.3, 0.03), 'metal', 0x9ac8f0, 0, waist, pz);
+  kilt(o, { top: waist - 0.02, hem: 0.02, radius: Math.max(pw, pd) * 1.12, flare: 0.26, z: pz * 0.5, panels: 14, ragged: 0.09, color: (p, c) => c.setHex(0x1a2a4a).lerp(new THREE.Color(0xdcecff), THREE.MathUtils.clamp(1 - p.y / 0.9, 0, 1) * 0.9).multiplyScalar(0.85 + 0.15 * Math.sin(p.y * 70)) });
+}
+
+export function buildBoneLady(): BossRig {
+  const ch = buildCharacter('lady', ladyPainter, ladyDesign);
+  const s3 = ch.rest.boxes.get('spine_03')!;
+  // Wings of curved rib bones with a pale-blue membrane glow.
+  const wing = (sx: number) => {
+    const g = new THREE.Group();
+    g.position.set(sx * 0.08, s3.max.y - 0.08, s3.min.z - 0.02);
+    const bones: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 7; i++) {
+      const a = 0.1 + i * 0.2;
+      const len = 1.4 - Math.abs(i - 2) * 0.1;
+      bones.push(tint(taperedTube([V(0, 0, 0), V(sx * Math.sin(a) * len * 0.5, Math.cos(a) * len * 0.5, -0.08), V(sx * Math.sin(a) * len, Math.cos(a) * len * 0.95, -0.18 - i * 0.02)], 0.03, 0.006, 12, 5), () => {}));
+    }
+    const m = new THREE.Mesh(mergeGeometries(bones.map((b) => tint(b, (_p, c) => c.setHex(0xe8e0c8))))!, ch.mats.matte);
+    m.castShadow = true;
+    m.rotation.x = -0.3;
+    g.add(m);
+    ch.attach('spine_03', g);
+    return g;
+  };
+  heldItem(ch, 'hand_r', (g) => {
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.026, 2.0, 8).rotateX(Math.PI / 2).translate(0, 0, 0.55), phong(0xe8e0c8, 40)));
+    g.add(new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.025, 6, 20, Math.PI * 1.35).translate(0, 0, 1.58), phong(0xe8e0c8, 40)));
+    g.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0).translate(0, 0, 1.58), new THREE.MeshBasicMaterial({ color: 0x9af0ff })));
+  });
+  return { character: ch, wingL: wing(1), wingR: wing(-1), accent: 0x7ac8ff, accentHot: 0xe0f4ff, summon: 'bone' };
+}

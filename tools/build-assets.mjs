@@ -36,7 +36,7 @@ const UAL2 = {
   Hit_Knockback: 'knockback', Consume: 'consume', MonsterTransformation: 'transform', KipUp: 'kipUp',
   Sword_Block: 'block', OverhandThrow: 'throw', Idle_FoldArms_Loop: 'foldArms', Surprise: 'surprise',
   Zombie_Idle_Loop: 'zIdle', Zombie_Walk_Fwd_Loop: 'zWalk', Zombie_Run_Fwd_Loop: 'zRun', Zombie_Scratch: 'zScratch',
-  Zombie_Bite: 'zBite', Zombie_Spawn: 'zSpawn',
+  Zombie_Bite: 'zBite', Zombie_Spawn: 'zSpawn', Bow_Shoot: 'bowShoot', Bow_Aim_Neutral: 'bowAim',
 };
 /** Only these bones keep translation keys; the rest of the skeleton only rotates. */
 const MOVING = new Set(['root', 'pelvis']);

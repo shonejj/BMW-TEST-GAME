@@ -10,6 +10,8 @@ const POST_FRAG = /* glsl */ `
   uniform sampler2D uTex;
   uniform vec2 uRes;      // low-res target size in pixels
   uniform float uLevels;  // colour steps per channel
+  uniform vec3 uGrade;    // chapter colour grade multiplier
+  uniform float uSat;
   varying vec2 vUv;
   float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
   void main() {
@@ -20,6 +22,7 @@ const POST_FRAG = /* glsl */ `
     float e = abs(l - lum(texture2D(uTex, vUv + vec2(px.x, 0.0)).rgb)) + abs(l - lum(texture2D(uTex, vUv + vec2(0.0, px.y)).rgb))
             + abs(l - lum(texture2D(uTex, vUv - vec2(px.x, 0.0)).rgb)) + abs(l - lum(texture2D(uTex, vUv - vec2(0.0, px.y)).rgb));
     c *= 1.0 - smoothstep(0.35, 1.2, e) * 0.35;
+    c = mix(vec3(lum(c)), c, uSat) * uGrade;
     gl_FragColor = vec4(c, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -90,6 +93,16 @@ export class Renderer {
     this.applyPixelRatio();
   }
 
+  /** Chapter colour grade for the pixel pass. */
+  setGrade(rgb: [number, number, number], sat: number) {
+    this.grade = { rgb, sat };
+    if (this.post) {
+      this.post.mat.uniforms.uGrade.value.set(...rgb);
+      this.post.mat.uniforms.uSat.value = sat;
+    }
+  }
+  private grade = { rgb: [1, 1, 1] as [number, number, number], sat: 1 };
+
   get activeTarget() {
     return this.look === 'pixel' ? this.rt : null;
   }
@@ -120,12 +133,14 @@ export class Renderer {
       this.rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, magFilter: THREE.NearestFilter, minFilter: THREE.NearestFilter, depthBuffer: true, samples: 0 });
       const mat = new THREE.ShaderMaterial({
         vertexShader: POST_VERT, fragmentShader: POST_FRAG, depthTest: false, depthWrite: false,
-        uniforms: { uTex: { value: this.rt.texture }, uRes: { value: new THREE.Vector2(w, h) }, uLevels: { value: 22 } },
+        uniforms: { uTex: { value: this.rt.texture }, uRes: { value: new THREE.Vector2(w, h) }, uLevels: { value: 22 }, uGrade: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1 } },
       });
       const scene = new THREE.Scene();
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
       quad.frustumCulled = false;
       scene.add(quad);
+      mat.uniforms.uGrade.value.set(...this.grade.rgb);
+      mat.uniforms.uSat.value = this.grade.sat;
       this.post = { scene, cam: new THREE.Camera(), mat };
     }
     this.rt.setSize(w, h);

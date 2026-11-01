@@ -7,21 +7,28 @@ import {
   SPELLS, SPELL_IDS, TALENTS, canLearn, pointsAvailable, rank, spellUnlocked, type Branch, type SpellId, type TalentId,
 } from '../game/progression';
 import { KINDS } from '../game/enemies';
+import { CHAPTERS } from '../game/chapters';
 import { ICONS, STAT_ICONS } from './icons';
 import { itemImg } from './itemart';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-type Tab = 'advance' | 'spells' | 'equipment' | 'inventory' | 'journal' | 'settings';
+type Tab = 'advance' | 'spells' | 'equipment' | 'inventory' | 'travel' | 'journal' | 'settings';
 const TABS: [Tab, string][] = [
   ['advance', 'Self-Advance'], ['spells', 'Spells'], ['equipment', 'Equipment'],
-  ['inventory', 'Inventory'], ['journal', 'Journal'], ['settings', 'Settings'],
+  ['inventory', 'Inventory'], ['travel', 'Travel'], ['journal', 'Journal'], ['settings', 'Settings'],
 ];
 
 const LORE: Record<string, string> = {
   spiderling: 'Hatchlings of the temple brood. Alone they are a nuisance; in the dark they come by the dozen.',
   armored: 'Broodmothers grow shells of temple stone. Watch for the red circle — they leap before they bite.',
   ghoul: 'The temple monks who never fled. The brood\'s venom keeps them walking long after death; they rise from the soil and rake with broken nails.',
+  wolf: 'Hill wolves twisted by the Yellow Wind. They run down anything that flees and pounce from range.',
+  archer: 'Desert bandits who sold their bows to the Tiger Vanguard. They shoot a fan of arrows from a distance.',
+  bone: 'Guardians of the frozen sanctum, still holding rusted swords. Heavy blows barely chip their bones; stagger them.',
+  frost: 'Ice-crowned witches who weave binding frost from afar. Close the distance quickly.',
+  tiger: 'A war-lord in gilded armour who commands the ridge, and summons the pack when he is wounded.',
+  bonelady: 'Mistress of the frozen sanctum. Her frost wings and bone gale bring the dead to her side.',
   weaver: 'Once pilgrims, now spider-women bound to the brood. They keep their distance, circle, and spit binding silk.',
   boss: 'A yaoguai lord who nested in the Mountain-Sea Temple after the monks fled. His jade miasma rots stone and flesh alike.',
 };
@@ -314,6 +321,7 @@ export class Menus {
       case 'equipment': body = this.equipmentTab(); break;
       case 'inventory': body = this.inventoryTab(); break;
       case 'journal': body = this.journalTab(); break;
+      case 'travel': body = this.travelTab(); break;
       case 'settings': body = this.settingsTab(); break;
     }
     const stat = (icon: string, label: string, v: string) => `<div class="stat" title="${label}">${STAT_ICONS[icon] ?? ''}<span>${label}</span><b>${v}</b></div>`;
@@ -427,6 +435,14 @@ export class Menus {
       g.salvage(g.inventory.bag.filter((i) => i.rarity <= 1));
       this.selectedItem = null;
       this.showGameMenu(this.tab);
+    });
+    // Travel
+    this.on(s, '[data-travel]', (el) => g.travelTo(+el.dataset.travel!));
+    this.on(s, '[data-chapter]', (el) => {
+      const n = +el.dataset.chapter!;
+      if (n >= g.unlocked) return;
+      if (n === g.chapter) { g.resume(); return; }
+      this.confirm(`Journey to ${CHAPTERS[n].place}?`, 'Your progress here is saved. You will resume at the furthest shrine you lit there.', () => g.startChapter(n), () => this.showGameMenu('travel'));
     });
     // Journal
     this.on(s, '[data-journal]', (el) => {
@@ -565,6 +581,21 @@ export class Menus {
       </div>`;
   }
 
+  /** Fast travel between lit shrines in this chapter, and the road map of every chapter. */
+  private travelTab() {
+    const g = this.game;
+    const lit = g.progress[g.chapter] ?? 0;
+    const zones = g.level.zones;
+    return `
+      <div class="tab-title"><h2>Travel</h2><span class="hint">Light Keeper's Shrines by reaching them, then return to any lit shrine.</span></div>
+      <h3 class="tv-h">${CHAPTERS[g.chapter].title} · ${CHAPTERS[g.chapter].place}</h3>
+      <div class="tv-list">${zones.map((z, i) => `<button class="tv-row ${i <= lit ? 'lit' : 'dark'}" data-nav data-travel="${i}" data-key="tv-${i}" ${i > lit ? 'aria-disabled="true"' : ''}>
+        <span class="tv-dot"></span><span class="tv-name">${esc(z.name)}</span><small>${i <= lit ? 'Travel' : 'Not yet reached'}</small></button>`).join('')}</div>
+      <h3 class="tv-h">Chapters</h3>
+      <div class="tv-list">${CHAPTERS.map((c, i) => `<button class="tv-row ${i < g.unlocked ? 'lit' : 'dark'} ${i === g.chapter ? 'here' : ''}" data-nav data-chapter="${i}" data-key="ch-${i}" ${i >= g.unlocked ? 'aria-disabled="true"' : ''}>
+        <span class="tv-dot"></span><span class="tv-name">${c.title}<em>${c.place}</em></span><small>${i === g.chapter ? 'You are here' : i < g.unlocked ? 'Journey' : 'Locked'}</small></button>`).join('')}</div>`;
+  }
+
   private journalTab() {
     const b = this.game.bestiary;
     const kinds = Object.keys(KINDS);
@@ -620,12 +651,12 @@ export class Menus {
     this.on(s, '[data-a=revive]', () => this.game.restartFromCheckpoint());
   }
 
-  showVictory(stats: { time: string; kills: number; gold: number; level: number; ng: number }) {
+  showVictory(stats: { time: string; kills: number; gold: number; level: number; ng: number; title: string; text: string; next: string | null }) {
     const s = this.show('victory', 'victory', `
       <div class="logo">
-        <div class="logo-small">Chapter One Complete</div>
+        <div class="logo-small">${stats.title} Complete</div>
         <div class="logo-big">Victory</div>
-        <div class="logo-sub">The Blackfeather Lord has fallen</div>
+        <div class="logo-sub">${stats.text}</div>
       </div>
       <div class="victory-stats">
         <div><span>Time</span><b>${stats.time}</b></div>
@@ -633,12 +664,12 @@ export class Menus {
         <div><span>Gold</span><b>${stats.gold.toLocaleString()}g</b></div>
         <div><span>Level</span><b>${stats.level}</b></div>
       </div>
-      <p class="hint">Play again on <b>Torment ${stats.ng + 1}</b>: stronger enemies, better loot. You keep your level, talents and gear.</p>
+      <p class="hint">${stats.next ? `The road continues to <b>${stats.next}</b>. Your level, talents and gear come with you.` : `Play again on <b>Torment ${stats.ng + 1}</b>: stronger enemies, better loot. You keep your level, talents and gear.`}</p>
       <div class="menu-buttons">
-        <button class="mbtn primary default" data-nav data-a="ng">Continue to Torment ${stats.ng + 1}</button>
+        <button class="mbtn primary default" data-nav data-a="ng">${stats.next ? `Journey to ${stats.next}` : `Continue to Torment ${stats.ng + 1}`}</button>
         <button class="mbtn" data-nav data-a="menu">Main Menu</button>
       </div>`);
-    this.on(s, '[data-a=ng]', () => this.game.newGamePlus());
+    this.on(s, '[data-a=ng]', () => this.game.nextChapter());
     this.on(s, '[data-a=menu]', () => this.game.toMainMenu());
   }
 }

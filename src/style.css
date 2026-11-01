@@ -594,3 +594,15 @@ html, body {
 .item-card.selected, .item-card:focus { box-shadow: 0 0 0 2px var(--rc, #ffd46a), 0 0 18px color-mix(in srgb, var(--rc, #ffd46a) 55%, transparent); outline: none; }
 .dc-ic { width: 72px; height: 72px; }
 .slot-tab { width: 58px; height: 52px; }
+
+/* --- Travel tab --- */
+.tv-h { font: 700 12px var(--display); letter-spacing: 0.2em; color: var(--gold); margin: 16px 0 6px; }
+.tv-list { display: flex; flex-direction: column; max-width: 520px; }
+.tv-row { display: flex; align-items: center; gap: 14px; text-align: left; background: none; border: none; border-bottom: 1px solid rgba(255, 255, 255, 0.07); padding: 11px 6px; color: var(--text); cursor: pointer; font: 400 15px var(--display); }
+.tv-row small { margin-left: auto; font: 600 11px var(--ui); color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.tv-row em { display: block; font: italic 400 12px var(--ui); color: var(--muted); }
+.tv-dot { width: 10px; height: 10px; transform: rotate(45deg); border: 1px solid var(--gold); background: transparent; flex: none; }
+.tv-row.lit .tv-dot { background: var(--gold); box-shadow: 0 0 10px rgba(255, 190, 90, 0.7); }
+.tv-row.dark { opacity: 0.4; }
+.tv-row.here small { color: var(--gold-hot); }
+.tv-row:focus, .tv-row:hover { outline: none; background: linear-gradient(90deg, rgba(150, 30, 16, 0.5), transparent 85%); }

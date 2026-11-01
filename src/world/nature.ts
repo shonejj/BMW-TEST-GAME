@@ -16,6 +16,7 @@ export interface PropPart {
 }
 
 const materialCache = new Map<string, THREE.Material>();
+// Declared before use by convert(): chapter tint applied to materials created later too.
 const partCache = new Map<string, PropPart[]>();
 
 /**
@@ -75,6 +76,8 @@ function convert(src: THREE.Material, sway: number, fade: boolean): THREE.Materi
     };
     m.customProgramCacheKey = () => 'nature' + sway + fade;
   }
+  m.userData.baseColor = m.color.clone();
+  m.color.multiply(new THREE.Color(natureTintHex));
   materialCache.set(key, m);
   return m;
 }
@@ -98,3 +101,14 @@ export function propParts(name: string, sway = 0.02, fade = false): PropPart[] {
   partCache.set(key, parts);
   return parts;
 }
+
+/** Tints every foliage material (chapter palettes: autumn gold, frost blue...). */
+export function setNatureTint(hex: number) {
+  for (const m of materialCache.values()) {
+    const mm = m as THREE.MeshLambertMaterial;
+    const base = mm.userData.baseColor as THREE.Color | undefined;
+    if (base) mm.color.copy(base).multiply(new THREE.Color(hex));
+  }
+  natureTintHex = hex;
+}
+let natureTintHex = 0xffffff;
