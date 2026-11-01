@@ -31,6 +31,8 @@ export interface Settings {
   /** Lower resolution automatically when the device can't keep up. */
   dynamicRes: boolean;
   cutscenes: boolean;
+  /** Set once phone defaults (30 fps cap) have been applied to an older saved profile. */
+  mobileTuned?: boolean;
 }
 
 const SAVE_KEY = 'monkey-king-save-v1';
@@ -58,7 +60,7 @@ export const loadSave = () => {
 };
 export const writeSave = (s: SaveData) => write(SAVE_KEY, s);
 
-export function loadSettings(defaultQuality: Quality): Settings {
-  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: 60, dynamicRes: true, cutscenes: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
+export function loadSettings(defaultQuality: Quality, defaultFps = 60): Settings {
+  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: defaultFps, dynamicRes: true, cutscenes: true, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
 }
 export const writeSettings = (s: Settings) => write(SETTINGS_KEY, s);

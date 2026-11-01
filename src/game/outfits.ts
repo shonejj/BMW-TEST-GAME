@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  buildCharacter, hashNoise, kilt, mottle, roughen, taperedTube, tint,
+  buildCharacter, hashNoise, kilt, mottle, roughen, taperedTube, tint, withRim,
   type BodyPainter, type Character, type Outfit, type Rest,
 } from './characters';
 
@@ -162,9 +162,9 @@ export interface HeroRig {
   tail: THREE.Group;
   sashes: THREE.Object3D[];
   feathers: THREE.Group;
-  staffMat: THREE.MeshStandardMaterial;
+  staffMat: THREE.MeshPhongMaterial;
   /** Staff caps; pulses with Focus and charge. */
-  goldMat: THREE.MeshStandardMaterial;
+  goldMat: THREE.MeshPhongMaterial;
 }
 
 export function buildHero(): HeroRig {
@@ -223,8 +223,8 @@ export function buildHero(): HeroRig {
   ch.attach('hand_r', gourdHand);
 
   // Ruyi Jingu Bang, built along +Z (the fist's grip axis at rest).
-  const staffMat = new THREE.MeshStandardMaterial({ color: 0x2a1410, roughness: 0.4, metalness: 0.3 });
-  const goldMat = new THREE.MeshStandardMaterial({ color: GOLD, roughness: 0.32, metalness: 0.85, emissive: 0x5a3200, emissiveIntensity: 0.25 });
+  const staffMat = withRim(new THREE.MeshPhongMaterial({ color: 0x2a1410, shininess: 50, specular: 0x5a3a2a }), 0.3);
+  const goldMat = withRim(new THREE.MeshPhongMaterial({ color: GOLD, shininess: 90, specular: 0xffe0a0, emissive: 0x5a3200, emissiveIntensity: 0.25 }), 0.4);
   const makeStaff = () => {
     const g = new THREE.Group();
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 2.1, 12).rotateX(Math.PI / 2).translate(0, 0, 0.5), staffMat);

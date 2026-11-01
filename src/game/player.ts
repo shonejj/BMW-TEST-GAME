@@ -477,6 +477,9 @@ export class Player {
         break;
       }
       case 'dodge': {
+        // The tail of a roll cancels straight into an attack, so dodge-and-counter feels instant.
+        if (k > 0.6 && input.attackHeld) { this.startAttack(mx, mz); break; }
+        if (k > 0.6 && input.heavyHeld) { this.startCharge(); break; }
         const sp = 18 * (1 - k) + 3;
         this.game.level.move(this.pos, this.dodgeDir.x * sp * dt, this.dodgeDir.y * sp * dt, this.radius);
         if (s.powers.has('fireTrail')) {
@@ -649,7 +652,7 @@ export class Player {
   private startDodge(mx: number, mz: number) {
     if (this.dodgeCd > 0) return false;
     const swift = rank(this.talents, 'swiftness');
-    this.setState('dodge', ROLL, 0.5 - swift * 0.02);
+    this.setState('dodge', ROLL, 0.44 - swift * 0.02);
     this.dodgeCd = 0.5 * (1 - swift * 0.1);
     this.perfectUsed = false;
     this.invuln = Math.max(this.invuln, 0.32);
@@ -833,9 +836,11 @@ export class Player {
     this.game.hitstop(0.06 + L * 0.03);
     this.game.rumble(0.4 + L * 0.2, 150 + L * 60);
     if (spent > 0) this.game.hud.floatText(this.pos, `Focus ×${spent}`, 'focus-pop', 0.9);
+    if (L + spent >= 2) this.game.vfx.twinkle(at, r * 0.6, 6);
   }
 
   private doFlameHit(i: number) {
+    this.game.vfx.flames(this.tmp.set(this.pos.x + Math.sin(this.yaw) * 2.5, this.pos.y, this.pos.z + Math.cos(this.yaw) * 2.5), 1.8, 5);
     this.game.vfx.slash(this.pos, this.yaw, { radius: 5, arc: Math.PI * 1.1, reverse: i % 2 === 1, tilt: (i - 1) * 0.25, colorA: COLORS.fire, colorB: COLORS.fireHot, dur: 0.32 });
     this.game.vfx.sparks.emit(this.pos.x + Math.sin(this.yaw) * 2.5, this.pos.y + 1, this.pos.z + Math.cos(this.yaw) * 2.5, { count: 25, radius: 2, speed: [1, 4], up: [1, 4], life: [0.3, 0.7], color: COLORS.fire, color2: COLORS.fireHot, gravity: -1 });
     this.game.strike({ origin: this.pos, yaw: this.yaw, range: 5, halfArc: 1.5, mult: 1.15, knock: 1.2, skill: true, color: COLORS.fireHot, burn: true });

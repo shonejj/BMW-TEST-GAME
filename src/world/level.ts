@@ -500,7 +500,7 @@ export class Level {
   private buildFoliage(density: number) {
     // Leaf cards are alpha-cut and overlap heavily, so foliage is mostly a fill-rate cost: phones (Medium/Low)
     // get fewer trees, kept further back, and a thinner carpet of plants.
-    const treeD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.55 : 0.3;
+    const treeD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.42 : 0.25;
     const coverD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.6 : 0.35;
     const treeGap = this.quality === 'high' ? 2.6 : 3.6;
     const buckets = new Map<string, THREE.Matrix4[]>();

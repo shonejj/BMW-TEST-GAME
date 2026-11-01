@@ -165,17 +165,52 @@ function bake(o: Outfit) {
 }
 
 export interface CharacterMats {
-  matte: THREE.MeshStandardMaterial;
-  cloth: THREE.MeshStandardMaterial;
-  metal: THREE.MeshStandardMaterial;
+  matte: THREE.MeshToonMaterial;
+  cloth: THREE.MeshToonMaterial;
+  metal: THREE.MeshPhongMaterial;
   glow: THREE.MeshBasicMaterial;
 }
 
+/** Three-band light ramp for cel shading: deep shadow, half-tone, lit. */
+let ramp: THREE.DataTexture | null = null;
+function toonRamp() {
+  if (!ramp) {
+    ramp = new THREE.DataTexture(new Uint8Array([70, 70, 70, 255, 150, 150, 150, 255, 255, 255, 255, 255]), 3, 1);
+    ramp.minFilter = ramp.magFilter = THREE.NearestFilter;
+    ramp.generateMipmaps = false;
+    ramp.needsUpdate = true;
+  }
+  return ramp;
+}
+
+/** Shared moonlit rim colour: silhouettes read against the dark ground, the way stylised action games light characters. */
+export const rimUniform = { value: new THREE.Color(0xa8c4ff).multiplyScalar(0.32) };
+
+/** Adds a view-dependent rim light (a few ALU ops, no texture or extra light). */
+export function withRim<T extends THREE.Material>(m: T, strength = 1): T {
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uRim = rimUniform;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uRim;')
+      .replace(
+        '#include <opaque_fragment>',
+        `outgoingLight += uRim * ${strength.toFixed(2)} * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.5);
+        #include <opaque_fragment>`,
+      );
+  };
+  m.customProgramCacheKey = () => 'rim' + strength;
+  return m;
+}
+
+/**
+ * Cel-shaded character materials: toon ramp + rim light for cloth, fur and skin; Phong for metal so armour
+ * still catches a highlight. Both are much cheaper per pixel than PBR, which matters for phone heat.
+ */
 export function makeMats(): CharacterMats {
   return {
-    matte: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }),
-    cloth: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, side: THREE.DoubleSide }),
-    metal: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.38, metalness: 0.7 }),
+    matte: withRim(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonRamp() })),
+    cloth: withRim(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonRamp(), side: THREE.DoubleSide })),
+    metal: withRim(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0x8a7a5a }), 0.5),
     glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
   };
 }

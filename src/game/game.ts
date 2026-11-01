@@ -131,7 +131,14 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.renderer = new Renderer(container);
-    this.settings = loadSettings(this.touch ? 'medium' : 'high');
+    // Phones default to a 30 fps cap: half the frames to render is the single biggest cut in heat and battery.
+    this.settings = loadSettings(this.touch ? 'medium' : 'high', this.touch ? 30 : 60);
+    if (this.touch && !this.settings.mobileTuned) {
+      // Older saved profiles kept 60 fps on phones, which is what overheated them.
+      this.settings.fpsCap = 30;
+      this.settings.mobileTuned = true;
+      writeSettings(this.settings);
+    }
     this.renderer.setQuality(this.settings.quality);
     this.camRig = new CameraRig(this.renderer.camera);
     this.input = new Input(this.renderer.renderer.domElement);
@@ -159,7 +166,7 @@ export class Game {
     this.vfx = new Vfx(this.renderer.scene, q === 'low' ? 800 : 1600);
     this.debris = new Debris(this.renderer.scene, (x, z) => this.level.heightAt(x, z));
     this.rain = new Rain(1400);
-    this.rain.setVisibleCount(q === 'low' ? 450 : q === 'medium' ? 900 : 1400);
+    this.rain.setVisibleCount(q === 'low' ? 350 : q === 'medium' ? 650 : 1400);
     this.renderer.scene.add(this.rain.lines);
     this.player = new Player(this);
     this.overlays = new EnemyOverlays(this.renderer.scene);
@@ -287,7 +294,7 @@ export class Game {
     Object.assign(this.settings, p);
     if (p.quality) {
       this.renderer.setQuality(p.quality);
-      this.rain.setVisibleCount(p.quality === 'low' ? 450 : p.quality === 'medium' ? 900 : 1400);
+      this.rain.setVisibleCount(p.quality === 'low' ? 350 : p.quality === 'medium' ? 650 : 1400);
       this.updateParticleScale();
     }
     if (p.screenShake !== undefined) this.camRig.shakeScale = p.screenShake;
@@ -509,6 +516,7 @@ export class Game {
 
   private onEnemyKilled(e: Enemy) {
     this.kills++;
+    this.vfx.soul(e.pos, e.isBoss ? 2.5 : e.kind === 'spiderling' ? 0.7 : 1);
     this.bestiary[e.kind] = (this.bestiary[e.kind] ?? 0) + 1;
     this.gainXp(e.xp);
     if (this.player.stats.powers.has('killMana')) this.player.mana = Math.min(this.player.stats.maxMana, this.player.mana + 8);
@@ -536,6 +544,7 @@ export class Game {
       this.hud.floatText(p.pos, 'LvL Up ⬆', 'levelup', 1.8);
       if (pointsAvailable(p.level, p.talents) > 0) this.hud.toast('Talent point available — open the menu (Self-Advance)', '#ffd46a');
       this.audio.play('levelup');
+      this.vfx.twinkle(p.pos, 1.4, 12);
     }
   }
 
@@ -835,6 +844,7 @@ export class Game {
     this.audio.play('perfect');
     this.vfx.flash(this.tmp.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), 2, COLORS.goldHot, 0.2);
     this.vfx.shockwave(this.player.pos, 2.5, COLORS.goldHot, 0.4);
+    this.vfx.twinkle(this.player.pos, 1.5, 6);
   }
 
   /** Immobilize spell: freeze every enemy inside the golden seal. */
@@ -1169,6 +1179,7 @@ export class Game {
       p.mana = p.stats.maxMana;
       p.refillGourd();
       this.vfx.beam(s.pos, COLORS.gold, 9, 0.8, 1.6);
+      this.vfx.twinkle(s.pos, 1.6, 10);
       this.vfx.shockwave(s.pos, 4, COLORS.gold, 0.6, 0.2);
       this.vfx.sparks.emit(s.pos.x, s.pos.y + 1.2, s.pos.z, { count: 40, radius: 1, speed: [0.5, 2], up: [1, 4], gravity: -0.5, life: [0.8, 1.6], color: COLORS.goldHot, color2: COLORS.gold });
       this.audio.play('focus');

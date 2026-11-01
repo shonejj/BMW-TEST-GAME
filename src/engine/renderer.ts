@@ -42,8 +42,8 @@ export class Renderer {
   /** Max pixel ratio per quality. Phones have 3x screens; rendering all of those pixels is what heats them up. */
   private get pixelCap() {
     const touch = isTouchDevice();
-    if (this.quality === 'low') return touch ? 0.8 : 1;
-    if (this.quality === 'medium') return touch ? 1.1 : 1.5;
+    if (this.quality === 'low') return touch ? 0.7 : 1;
+    if (this.quality === 'medium') return touch ? 1.0 : 1.5;
     return 2;
   }
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PixelFx } from './pixelfx';
 import { rand } from '../engine/util';
 
 // ---------------------------------------------------------------------------
@@ -471,6 +472,8 @@ interface Pooled {
 export class Vfx {
   readonly sparks: Particles;
   readonly dust: Particles;
+  /** Pixel-art flipbook sprites layered over the particles for punchy, readable hits. */
+  readonly pixel: PixelFx;
   private effects: (Effect & { item: Pooled; kind: PoolKind })[] = [];
   private pools: Record<PoolKind, Pooled[]> = { slash: [], ring: [], tele: [], beam: [], crack: [], flash: [] };
   /** Set by the game; used to billboard impact flashes. */
@@ -483,6 +486,7 @@ export class Vfx {
     this.sparks = new Particles(maxParticles, true);
     this.dust = new Particles(Math.floor(maxParticles / 2), false);
     scene.add(this.sparks.points, this.dust.points);
+    this.pixel = new PixelFx(scene);
   }
 
   private create(kind: PoolKind): Pooled {
@@ -727,6 +731,7 @@ export class Vfx {
 
   /** Bright camera-facing star at an impact point. */
   flash(pos: THREE.Vector3, size = 1.2, color = COLORS.goldHot, dur = 0.12) {
+    this.pixel.spawn('ring', pos, size * 2.4, 0.3, { tint: color === COLORS.goldHot || color === COLORS.gold ? 0xffffff : color });
     const it = this.take('flash');
     const u = it.mat.uniforms;
     (u.uColor.value as THREE.Color).set(color);
@@ -748,6 +753,10 @@ export class Vfx {
       u.uAlpha.value = Math.min(1, k * 10, (1 - k) * 6);
       u.uTime.value = this.time;
       it.obj.rotation.y += dt;
+      if (Math.random() < dt * radius * 3) {
+        const a = Math.random() * Math.PI * 2;
+        this.pixel.spawn('fire', this.tmpV.set(c.x + Math.cos(a) * radius, c.y + 0.6, c.z + Math.sin(a) * radius), 1.3, 0.5);
+      }
       const n = Math.ceil(radius * 3 * Math.min(1, dt * 60));
       for (let i = 0; i < n; i++) {
         const a = Math.random() * Math.PI * 2;
@@ -756,17 +765,53 @@ export class Vfx {
     });
   }
 
-  /** Hit sparks at a point. */
+  /** Hit sparks at a point, with a pixel burst and a slash streak sprite. */
   impact(pos: THREE.Vector3, color = COLORS.goldHot, count = 10) {
+    const big = count > 10;
+    const at = this.tmpV.set(pos.x, pos.y + 1, pos.z);
+    // Gold-ish hits keep the sprite's own hot palette; other colours tint it.
+    const tint = color === COLORS.goldHot || color === COLORS.gold ? 0xffffff : color;
+    this.pixel.spawn('impact', at, big ? 2.4 : 1.6, big ? 0.32 : 0.24, { tint });
+    this.pixel.spawn('slash', at, big ? 2.8 : 2.0, 0.18, { tint, rot: Math.random() * Math.PI * 2 });
+    if (big) this.pixel.spawn('spark', at.set(at.x + (Math.random() - 0.5), at.y + 0.6, at.z), 1.2, 0.35, { delay: 0.05 });
     this.sparks.emit(pos.x, pos.y + 1, pos.z, { count, speed: [3, 9], up: [1, 5], life: [0.15, 0.4], size: [0.1, 0.25], color, color2: COLORS.gold, gravity: 10, drag: 3 });
   }
 
   dustBurst(pos: THREE.Vector3, count = 12, radius = 1) {
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + Math.random();
+      this.pixel.spawn('dust', this.tmpV.set(pos.x + Math.cos(a) * radius * 0.6, pos.y + 0.5 + Math.random() * 0.3, pos.z + Math.sin(a) * radius * 0.6), 1.4 + radius * 0.8, 0.55 + Math.random() * 0.2, { delay: i * 0.04 });
+    }
     this.dust.emit(pos.x, pos.y + 0.2, pos.z, { count, radius, speed: [1, 3], up: [0.2, 1.5], life: [0.6, 1.4], size: [0.6, 1.2], color: 0x6c6458, color2: 0x8f877a, gravity: 0.5, drag: 2 });
   }
 
+  /** Death of a yaoguai: its soul rises out of a puff of miasma. */
+  soul(pos: THREE.Vector3, size = 1) {
+    this.pixel.spawn('miasma', this.tmpV.set(pos.x, pos.y + 0.7, pos.z), 2.2 * size, 0.6);
+    this.pixel.spawn('soul', this.tmpV.set(pos.x, pos.y + 1.4 * size, pos.z), 2.0 * size, 0.9, { delay: 0.1, rot: 0 });
+  }
+
+  /** Burst of flame sprites (fire spells, burning hits). */
+  flames(pos: THREE.Vector3, radius: number, n: number) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * radius;
+      this.pixel.spawn('fire', this.tmpV.set(pos.x + Math.cos(a) * r, pos.y + 0.6, pos.z + Math.sin(a) * r), 1.2 + Math.random() * 0.6, 0.45 + Math.random() * 0.2, { delay: i * 0.03, rot: 0 });
+    }
+  }
+
+  /** Twinkling stars scattered around a point (perfect dodge, level up, shrine). */
+  twinkle(pos: THREE.Vector3, radius: number, n: number, tint = 0xffffff) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * radius;
+      this.pixel.spawn('spark', this.tmpV.set(pos.x + Math.cos(a) * r, pos.y + 0.5 + Math.random() * 1.8, pos.z + Math.sin(a) * r), 0.8 + Math.random() * 0.6, 0.4 + Math.random() * 0.3, { delay: i * 0.04, tint, rot: 0 });
+    }
+  }
+
+  private readonly tmpV = new THREE.Vector3();
+
   update(dt: number) {
     this.time += dt;
+    this.pixel.update(dt);
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const e = this.effects[i];
       e.t += dt;
