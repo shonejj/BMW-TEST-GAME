@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { ARMOR_DEFAULT, BOOT_LOOK, CHEST_LOOK, GLOVE_LOOK, WEAPON_LOOK } from './gearlook';
+import { baseIndex, RARITY_HEX, type Item, type Slot } from './loot';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   buildCharacter, hashNoise, kilt, mottle, roughen, taperedTube, tint, withRim,
@@ -55,7 +57,6 @@ const heroPainter: BodyPainter = (bone, p, c) => {
 };
 
 const GOLD = 0xd29a36;
-const LACQUER = 0x4a2218;
 
 function heroDesign(o: Outfit, r: Rest) {
   const { c: hc, hx, hz } = headFrame(r);
@@ -107,7 +108,7 @@ function heroDesign(o: Outfit, r: Rest) {
     cp.setXYZ(i, cp.getX(i) * ridge, cp.getY(i), cp.getZ(i) * ridge);
   }
   cuirass.scale(cw * 1.12, 1, cd * 1.25).computeVertexNormals();
-  o.put('spine_03', cuirass, 'metal', LACQUER, 0, cy, cz);
+  o.put('spine_03', cuirass, 'armor', 0xffffff, 0, cy, cz);
   o.put('spine_03', band(cw * 1.13, cd * 1.27, 0.012), 'metal', GOLD, 0, cy + 0.15, cz);
   o.put('spine_03', band(cw * 1.08, cd * 1.2, 0.012), 'metal', GOLD, 0, cy - 0.15, cz);
   o.put('spine_03', new THREE.CylinderGeometry(0.06, 0.06, 0.02, 24).rotateX(Math.PI / 2), 'metal', GOLD, 0, cy + 0.05, cz + cd * 1.25 + 0.012);
@@ -126,11 +127,11 @@ function heroDesign(o: Outfit, r: Rest) {
     for (let k = 0; k < 3; k++) {
       const rad = 0.12 - k * 0.012;
       o.put(`upperarm_${side}`, new THREE.SphereGeometry(rad, 18, 8, 0, Math.PI * 2, 0, Math.PI * 0.42).scale(1, 0.75, 1.05),
-        'metal', k === 1 ? GOLD : LACQUER, sp.x + sx * (0.02 + k * 0.05), sp.y + 0.05 - k * 0.028, sp.z, 0, 0, -sx * (0.45 + k * 0.12));
+        k === 1 ? 'metal' : 'armor', k === 1 ? GOLD : 0xffffff, sp.x + sx * (0.02 + k * 0.05), sp.y + 0.05 - k * 0.028, sp.z, 0, 0, -sx * (0.45 + k * 0.12));
     }
     const lp = r.pos(`lowerarm_${side}`);
     const len = r.pos(`hand_${side}`).distanceTo(lp);
-    o.put(`lowerarm_${side}`, new THREE.CylinderGeometry(0.052, 0.044, len * 0.55, 18).rotateZ(Math.PI / 2), 'metal', LACQUER, lp.x + sx * len * 0.6, lp.y, lp.z);
+    o.put(`lowerarm_${side}`, new THREE.CylinderGeometry(0.052, 0.044, len * 0.55, 18).rotateZ(Math.PI / 2), 'armor', 0xffffff, lp.x + sx * len * 0.6, lp.y, lp.z);
     for (const f of [0.33, 0.87]) {
       o.put(`lowerarm_${side}`, new THREE.TorusGeometry(0.05 - f * 0.006, 0.008, 6, 18).rotateY(Math.PI / 2), 'metal', GOLD, lp.x + sx * len * f, lp.y, lp.z);
     }
@@ -165,6 +166,8 @@ export interface HeroRig {
   staffMat: THREE.MeshPhongMaterial;
   /** Staff caps; pulses with Focus and charge. */
   goldMat: THREE.MeshPhongMaterial;
+  /** Shows the equipped gear on the hero: armour paint, glove/boot overlays, staff design, relic charm. */
+  applyGear(equipped: Partial<Record<Slot, Item>>): void;
 }
 
 export function buildHero(): HeroRig {
@@ -259,7 +262,55 @@ export function buildHero(): HeroRig {
   model.add(ch.model);
   const root = new THREE.Group();
   root.add(model);
-  return { character: ch, root, model, staff, staffBack, staffTip, staffMid, gourdHip, gourdHand, tail, sashes, feathers, staffMat, goldMat };
+
+  // --- Visible gear ---------------------------------------------------------------------------
+  const gearMat = (c: number, metal: boolean) => withRim(new THREE.MeshPhongMaterial({ color: c, shininess: metal ? 80 : 18, specular: metal ? 0x998866 : 0x222222 }), 0.4);
+  const glovesMat = gearMat(0xffffff, false), bootsMat = gearMat(0xffffff, false);
+  const mk = (geo: THREE.BufferGeometry, m: THREE.Material, bone: string, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) => {
+    const me = new THREE.Mesh(geo, m);
+    me.position.set(x, y, z);
+    me.rotation.set(rx, ry, rz);
+    me.castShadow = true;
+    ch.attach(bone, me);
+    return me;
+  };
+  const gloves: THREE.Object3D[] = [], bootParts: THREE.Object3D[] = [];
+  for (const side of ['l', 'r'] as const) {
+    const sx = side === 'l' ? 1 : -1;
+    const hpos = r.pos(`hand_${side}`);
+    gloves.push(mk(new THREE.CylinderGeometry(0.058, 0.05, 0.13, 14).rotateZ(Math.PI / 2), glovesMat, `lowerarm_${side}`, hpos.x - sx * 0.045, hpos.y, hpos.z));
+    gloves.push(mk(new THREE.BoxGeometry(0.1, 0.085, 0.12), glovesMat, `hand_${side}`, hpos.x + sx * 0.05, hpos.y, hpos.z));
+    const foot = r.pos(`foot_${side}`);
+    bootParts.push(mk(new THREE.CylinderGeometry(0.062, 0.07, 0.2, 14), bootsMat, `calf_${side}`, foot.x, foot.y + 0.12, foot.z + 0.015));
+    bootParts.push(mk(new THREE.BoxGeometry(0.115, 0.085, 0.27), bootsMat, `foot_${side}`, foot.x, foot.y - 0.035, foot.z + 0.085));
+  }
+  const relicMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const relicMesh = mk(new THREE.IcosahedronGeometry(0.045, 0), relicMat, 'pelvis', -0.12, waist - 0.07, pelvisFrame(r).pd + 0.03);
+  const relicCord = mk(new THREE.CylinderGeometry(0.006, 0.006, 0.1, 4), new THREE.MeshBasicMaterial({ color: 0xc82a2a }), 'pelvis', -0.12, waist - 0.02, pelvisFrame(r).pd + 0.03);
+
+  const applyGear = (eq: Partial<Record<Slot, Item>>) => {
+    const w = eq.weapon, c = eq.chest, g = eq.gloves, b = eq.boots, rl = eq.relic;
+    // Staff: shaft and cap colours follow the weapon design; rarity makes the caps glow.
+    const wl = w ? WEAPON_LOOK[baseIndex(w) % WEAPON_LOOK.length] : { shaft: 0x2a1410, cap: GOLD, r: 0.026 };
+    staffMat.color.setHex(wl.shaft);
+    goldMat.color.setHex(wl.cap);
+    goldMat.emissive.setHex(w ? RARITY_HEX[w.rarity] : 0x5a3200);
+    goldMat.emissiveIntensity = w ? 0.25 + w.rarity * 0.18 : 0.25;
+    for (const s of [staff, staffBack]) s.scale.set(wl.r / 0.026 > 1.6 ? 1.6 : Math.max(1, wl.r / 0.04), Math.max(1, wl.r / 0.04), 1);
+    // Armour paint.
+    ch.mats.armor.color.setHex(c ? CHEST_LOOK[baseIndex(c) % CHEST_LOOK.length] : ARMOR_DEFAULT);
+    ch.mats.armor.emissive.setHex(c && c.rarity >= 3 ? RARITY_HEX[c.rarity] : 0x000000);
+    ch.mats.armor.emissiveIntensity = c && c.rarity >= 3 ? 0.06 : 0;
+    // Gloves, boots, relic overlays.
+    for (const o of gloves) o.visible = !!g;
+    if (g) glovesMat.color.setHex(GLOVE_LOOK[baseIndex(g) % GLOVE_LOOK.length]);
+    for (const o of bootParts) o.visible = !!b;
+    if (b) bootsMat.color.setHex(BOOT_LOOK[baseIndex(b) % BOOT_LOOK.length]);
+    relicMesh.visible = relicCord.visible = !!rl;
+    if (rl) relicMat.color.setHex(RARITY_HEX[rl.rarity]);
+  };
+  applyGear({});
+  return { character: ch, root, model, staff, staffBack, staffTip, staffMid, gourdHip, gourdHand, tail, sashes, feathers, staffMat, goldMat, applyGear };
 }
 
 // ---------------------------------------------------------------------------

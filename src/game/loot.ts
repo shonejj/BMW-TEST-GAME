@@ -52,6 +52,12 @@ const BASES: Record<Slot, string[]> = {
   boots: ['Sandals', 'Cloud Treaders', 'Wind Boots', 'Mountain Greaves'],
   relic: ['Jade Charm', 'Fire Heart', 'Spirit Gourd', 'Prayer Beads'],
 };
+/** Which base design (index into BASES[slot]) an item was rolled from, recovered from its name. */
+export function baseIndex(it: { slot: Slot; name: string }): number {
+  const i = BASES[it.slot].findIndex((b) => it.name.includes(b));
+  return Math.max(0, i);
+}
+
 const PREFIXES = ['Jade', 'Searing', 'Savage', 'Purified', 'Blazing', 'Ancient', 'Storm', 'Gilded', 'Moonlit', 'Wrathful', 'Cursed', 'Celestial'];
 const EPITHETS = ['Mythic', 'Doomed', 'Heavenly', 'Demonic', 'Eternal', 'Thunderous', 'Shadow', 'Immortal'];
 const SUFFIXES = ['of Embers', 'of the Peak', 'of Ruin', 'of the Monkey King', 'of Wind', 'of the Abyss', 'of Rain', 'of Fury'];

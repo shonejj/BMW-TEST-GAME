@@ -280,6 +280,7 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'paused';
     this.controls.setVisible(false);
+    this.hud.setVisible(false);
     this.menus.showGameMenu();
   }
 
@@ -288,6 +289,7 @@ export class Game {
     if (this.state === 'paused' || this.state === 'playing') {
       this.state = 'playing';
       this.controls.setVisible(true);
+      this.hud.setVisible(true);
       this.input.clearPresses();
     }
   }
@@ -296,6 +298,7 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'paused';
     this.controls.setVisible(false);
+    this.hud.setVisible(false);
     this.menus.showGameMenu('equipment');
   }
 
@@ -996,23 +999,44 @@ export class Game {
     cam.lookAt(h.x - Math.cos(a) * shift, h.y + 1.3, h.z + Math.sin(a) * shift);
     pl.yaw = a - 0.55;
     pl.root.rotation.y = pl.yaw;
-    pl.anim.loop('lookAround', 0.8, 0.4);
-    pl.anim.update(dt, 0);
+    this.naturalIdle(dt);
     this.camRig.target.copy(h);
     this.level.shrines[0]?.setLit(true);
+  }
+
+  private menuIdle = { t: 0, look: 0, sway: 0 };
+
+  /**
+   * Natural standing pose for menus: relaxed combat stance with weight shifts, an occasional look around,
+   * and a slow turn of the body, instead of a frozen mannequin pose.
+   */
+  private naturalIdle(dt: number) {
+    const pl = this.player;
+    const m = this.menuIdle;
+    m.t += dt;
+    m.sway += dt;
+    if (m.look > 0) {
+      m.look -= dt;
+      pl.anim.loop('lookAround', 0.9, 0.5);
+      if (m.look <= 0) m.t = 0;
+    } else {
+      pl.anim.loop('swordIdle', 0.85, 0.5);
+      if (m.t > 7 + Math.sin(this.time) * 2) m.look = 4.2;
+    }
+    pl.anim.update(dt, 0);
+    pl.root.rotation.y = pl.yaw + Math.sin(m.sway * 0.35) * 0.18;
   }
 
   /** Game menu backdrop: the real hero in a three-quarter portrait on the right of the screen. */
   private portraitShot(dt: number) {
     const pl = this.player;
     const h = pl.pos;
-    const a = pl.yaw + 0.5;
+    const a = pl.yaw + 0.55 + Math.sin(this.menuIdle.sway * 0.2) * 0.1;
     const cam = this.renderer.camera;
-    cam.position.set(h.x + Math.sin(a) * 3.6, h.y + 1.45, h.z + Math.cos(a) * 3.6);
-    const shift = cam.aspect < 1 ? 0 : 1.15;
-    cam.lookAt(h.x - Math.cos(a) * shift, h.y + 1.05, h.z + Math.sin(a) * shift);
-    pl.anim.loop('idle', 1, 0.3);
-    pl.anim.update(dt, 0);
+    cam.position.set(h.x + Math.sin(a) * 3.4, h.y + 1.35, h.z + Math.cos(a) * 3.4);
+    const shift = cam.aspect < 1 ? 0 : 1.1;
+    cam.lookAt(h.x - Math.cos(a) * shift, h.y + 1.0, h.z + Math.sin(a) * shift);
+    this.naturalIdle(dt);
   }
 
   private frame(rawDt: number) {

@@ -13,8 +13,8 @@ import { cloneCharacter } from './assets';
  */
 
 export type BodyPainter = (bone: string, p: THREE.Vector3, out: THREE.Color) => void;
-export type Finish = 'matte' | 'cloth' | 'metal' | 'glow';
-const FINISHES: Finish[] = ['matte', 'cloth', 'metal', 'glow'];
+export type Finish = 'matte' | 'cloth' | 'metal' | 'armor' | 'glow';
+const FINISHES: Finish[] = ['matte', 'cloth', 'metal', 'armor', 'glow'];
 
 /** Rest-pose measurements shared by every copy of the mannequin. */
 export interface Rest {
@@ -168,6 +168,8 @@ export interface CharacterMats {
   matte: THREE.MeshToonMaterial;
   cloth: THREE.MeshToonMaterial;
   metal: THREE.MeshPhongMaterial;
+  /** Recolourable armour plates (their vertex colour is white; the material colour is the paint). */
+  armor: THREE.MeshPhongMaterial;
   glow: THREE.MeshBasicMaterial;
 }
 
@@ -211,6 +213,7 @@ export function makeMats(): CharacterMats {
     matte: withRim(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonRamp() })),
     cloth: withRim(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonRamp(), side: THREE.DoubleSide })),
     metal: withRim(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0x8a7a5a }), 0.5),
+    armor: withRim(new THREE.MeshPhongMaterial({ vertexColors: true, color: 0x4a2218, shininess: 60, specular: 0x6a5a4a }), 0.5),
     glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
   };
 }

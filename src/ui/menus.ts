@@ -7,7 +7,8 @@ import {
   SPELLS, SPELL_IDS, TALENTS, canLearn, pointsAvailable, rank, spellUnlocked, type Branch, type SpellId, type TalentId,
 } from '../game/progression';
 import { KINDS } from '../game/enemies';
-import { ICONS, SLOT_ICONS, STAT_ICONS } from './icons';
+import { ICONS, STAT_ICONS } from './icons';
+import { itemImg } from './itemart';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -514,7 +515,7 @@ export class Menus {
 
   private itemCard(it: Item, extraCls = '') {
     return `<button class="item-card r${it.rarity} ${this.selectedItem === it.id ? 'selected' : ''} ${extraCls}" style="--rc:${RARITY_COLORS[it.rarity]}" data-nav data-item="${it.id}" data-key="it-${it.id}">
-      <span class="ic">${SLOT_ICONS[it.slot]}</span><span class="lvl">${it.level}</span>${extraCls.includes('is-equipped') ? '<span class="eq-mark">✦</span>' : ''}</button>`;
+      <span class="ic">${itemImg(this.game.renderer.renderer, it)}</span><span class="lvl">${it.level}</span>${extraCls.includes('is-equipped') ? '<span class="eq-mark">✦</span>' : ''}</button>`;
   }
 
   private detail(it: Item | undefined, compare?: Item) {
@@ -523,7 +524,7 @@ export class Menus {
     const diff = compare && compare.id !== it.id ? itemScore(it) - itemScore(compare) : null;
     const equipped = this.game.inventory.equipped[it.slot]?.id === it.id;
     return `<div class="detail-card" style="--rc:${RARITY_COLORS[it.rarity]}">
-      <div class="dc-head"><span class="dc-rarity">${RARITY_NAMES[it.rarity]}</span><span class="dc-ic">${SLOT_ICONS[it.slot]}</span></div>
+      <div class="dc-head"><span class="dc-rarity">${RARITY_NAMES[it.rarity]}</span><span class="dc-ic">${itemImg(this.game.renderer.renderer, it)}</span></div>
       <div class="dc-name">${esc(it.name)}</div>
       <div class="dc-type">${SLOT_NAMES[it.slot]} · Level ${it.level}</div>
       <ul class="dc-stats">${lines}</ul>
@@ -543,7 +544,7 @@ export class Menus {
     const sel = this.findItem(this.selectedItem) ?? eq ?? items[0];
     if (sel) this.selectedItem = sel.id;
     return `
-      <div class="slot-tabs">${SLOTS.map((s) => `<button class="slot-tab ${s === slot ? 'active' : ''}" data-nav data-eqslot="${s}" data-key="slot-${s}" title="${SLOT_NAMES[s]}">${SLOT_ICONS[s]}</button>`).join('')}</div>
+      <div class="slot-tabs">${SLOTS.map((s) => `<button class="slot-tab ${s === slot ? 'active' : ''}" data-nav data-eqslot="${s}" data-key="slot-${s}" title="${SLOT_NAMES[s]}">${itemImg(this.game.renderer.renderer, this.game.inventory.equipped[s] ?? { slot: s, base: 0, rarity: 0 }, this.game.inventory.equipped[s] ? 'item-img' : 'item-img empty-slot')}</button>`).join('')}</div>
       <div class="equip-layout">
         <div class="equip-list"><h3>${SLOT_NAMES[slot]}</h3>
           <div class="item-grid">${items.length ? items.map((i) => this.itemCard(i, i.id === eq?.id ? 'is-equipped' : '')).join('') : '<p class="hint">No items for this slot yet — loot enemies and breakables.</p>'}</div>

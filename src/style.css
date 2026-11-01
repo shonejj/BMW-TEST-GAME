@@ -585,3 +585,12 @@ html, body {
 .slot-tab { border: none; background: none; border-bottom: 2px solid transparent; border-radius: 0; }
 .slot-tab.active { background: none; color: var(--gold-hot); border-bottom-color: #c0301c; }
 .slot-tab:focus { outline: none; color: #fff1d2; }
+
+/* --- Item art: pixel icons rendered from 3D gear models --- */
+.item-img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7)); }
+.item-img.empty-slot { opacity: 0.35; filter: grayscale(1) brightness(0.7); }
+.item-card .ic { width: 100%; height: 100%; display: grid; place-items: center; padding: 4%; }
+.item-card { background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--rc, #888) 28%, #14110e), #0c0a09 75%); border: 1px solid color-mix(in srgb, var(--rc, #888) 55%, #000); }
+.item-card.selected, .item-card:focus { box-shadow: 0 0 0 2px var(--rc, #ffd46a), 0 0 18px color-mix(in srgb, var(--rc, #ffd46a) 55%, transparent); outline: none; }
+.dc-ic { width: 72px; height: 72px; }
+.slot-tab { width: 58px; height: 52px; }

@@ -119,6 +119,7 @@ export class Player {
   private healLeft = 0;
   private hurtFlash = 0;
   private hurtT = 0;
+  private equipped: Inventory['equipped'] = {};
   private lastStep = 0;
   private fireTrailTimer = 0;
   private readonly light: THREE.PointLight;
@@ -201,6 +202,8 @@ export class Player {
     if (s.powers.has('furyGain')) s.furyGain *= 1.6;
     s.cdr = Math.min(s.cdr, 0.5);
     this.stats = s;
+    this.equipped = inv.equipped;
+    if (!this.transformed) this.rig.applyGear(inv.equipped);
     this.hp = Math.min(this.hp, s.maxHp);
     this.gourd = Math.min(this.gourd, s.gourdCharges);
     return s;
@@ -878,8 +881,16 @@ export class Player {
     m.cloth.color.setHex(on ? 0xffd890 : 0xffffff);
     m.metal.color.setHex(on ? 0xffc860 : 0xffffff);
     m.metal.emissive.setHex(on ? 0x5a3000 : 0x000000);
-    this.rig.staffMat.color.setHex(on ? 0xffa040 : 0x2a1410);
-    this.rig.staffMat.emissive.setHex(on ? 0xff5010 : 0x000000);
+    if (on) {
+      m.armor.color.setHex(0xc89a3a);
+      m.armor.emissive.setHex(0x5a3000);
+      m.armor.emissiveIntensity = 1;
+      this.rig.staffMat.color.setHex(0xffa040);
+      this.rig.staffMat.emissive.setHex(0xff5010);
+    } else {
+      this.rig.staffMat.emissive.setHex(0x000000);
+      this.rig.applyGear(this.equipped);
+    }
     this.root.scale.setScalar(on ? 1.25 : 1);
     this.light.color.setHex(on ? 0xffc060 : 0xffb070);
     this.light.intensity = on ? 45 : 30;
