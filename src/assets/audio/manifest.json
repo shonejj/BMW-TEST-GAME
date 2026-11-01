@@ -1,0 +1,376 @@
+{
+ "sfx": {
+  "swing": [
+   "swing0.mp3",
+   "swing1.mp3",
+   "swing2.mp3",
+   "swing3.mp3",
+   "swing4.mp3"
+  ],
+  "swingHeavy": [
+   "swingHeavy0.mp3",
+   "swingHeavy1.mp3",
+   "swingHeavy2.mp3"
+  ],
+  "hit": [
+   "hit0.mp3",
+   "hit1.mp3",
+   "hit2.mp3",
+   "hit3.mp3",
+   "hit4.mp3",
+   "hit5.mp3",
+   "hit6.mp3",
+   "hit7.mp3"
+  ],
+  "impact": [
+   "impact0.mp3",
+   "impact1.mp3",
+   "impact2.mp3",
+   "impact3.mp3",
+   "impact4.mp3"
+  ],
+  "impactHeavy": [
+   "impactHeavy0.mp3",
+   "impactHeavy1.mp3",
+   "impactHeavy2.mp3",
+   "impactHeavy3.mp3",
+   "impactHeavy4.mp3"
+  ],
+  "clang": [
+   "clang0.mp3",
+   "clang1.mp3",
+   "clang2.mp3"
+  ],
+  "rock": [
+   "rock0.mp3",
+   "rock1.mp3",
+   "rock2.mp3",
+   "rock3.mp3"
+  ],
+  "shatter": [
+   "shatter0.mp3",
+   "shatter1.mp3",
+   "shatter2.mp3"
+  ],
+  "coin": [
+   "coin0.mp3",
+   "coin1.mp3",
+   "coin2.mp3"
+  ],
+  "gem": [
+   "gem0.mp3",
+   "gem1.mp3",
+   "gem2.mp3"
+  ],
+  "levelup": [
+   "levelup0.mp3"
+  ],
+  "powerup": [
+   "powerup0.mp3"
+  ],
+  "skitter": [
+   "skitter0.mp3",
+   "skitter1.mp3",
+   "skitter2.mp3",
+   "skitter3.mp3"
+  ],
+  "bite": [
+   "bite0.mp3",
+   "bite1.mp3",
+   "bite2.mp3"
+  ],
+  "roar": [
+   "roar0.mp3",
+   "roar1.mp3",
+   "roar2.mp3"
+  ],
+  "monster": [
+   "monster0.mp3",
+   "monster1.mp3",
+   "monster2.mp3",
+   "monster3.mp3"
+  ],
+  "ghoul": [
+   "ghoul0.mp3",
+   "ghoul1.mp3",
+   "ghoul2.mp3",
+   "ghoul3.mp3",
+   "ghoul4.mp3",
+   "ghoul5.mp3",
+   "ghoul6.mp3",
+   "ghoul7.mp3"
+  ],
+  "creatureDie": [
+   "creatureDie0.mp3",
+   "creatureDie1.mp3",
+   "creatureDie2.mp3"
+  ],
+  "fire": [
+   "fire0.mp3",
+   "fire1.mp3",
+   "fire2.mp3",
+   "fire3.mp3"
+  ],
+  "fireBig": [
+   "fireBig0.mp3",
+   "fireBig1.mp3",
+   "fireBig2.mp3"
+  ],
+  "spell": [
+   "spell0.mp3",
+   "spell1.mp3",
+   "spell2.mp3"
+  ],
+  "magic": [
+   "magic0.mp3"
+  ],
+  "unsheathe": [
+   "unsheathe0.mp3",
+   "unsheathe1.mp3",
+   "unsheathe2.mp3"
+  ],
+  "grunt": [
+   "grunt0.mp3",
+   "grunt1.mp3",
+   "grunt2.mp3",
+   "grunt3.mp3",
+   "grunt4.mp3"
+  ],
+  "cloth": [
+   "cloth0.mp3",
+   "cloth1.mp3",
+   "cloth2.mp3",
+   "cloth3.mp3"
+  ],
+  "web": [
+   "web0.mp3",
+   "web1.mp3",
+   "web2.mp3",
+   "web3.mp3"
+  ],
+  "drink": [
+   "drink0.mp3",
+   "drink1.mp3",
+   "drink2.mp3"
+  ],
+  "bell": [
+   "bell0.mp3",
+   "bell1.mp3"
+  ],
+  "glass": [
+   "glass0.mp3",
+   "glass1.mp3"
+  ],
+  "stepGrass": [
+   "stepGrass0.mp3",
+   "stepGrass1.mp3",
+   "stepGrass2.mp3",
+   "stepGrass3.mp3",
+   "stepGrass4.mp3"
+  ],
+  "stepStone": [
+   "stepStone0.mp3",
+   "stepStone1.mp3",
+   "stepStone2.mp3",
+   "stepStone3.mp3",
+   "stepStone4.mp3"
+  ],
+  "uiMove": [
+   "uiMove0.mp3",
+   "uiMove1.mp3"
+  ],
+  "uiSelect": [
+   "uiSelect0.mp3",
+   "uiSelect1.mp3"
+  ],
+  "uiBack": [
+   "uiBack0.mp3",
+   "uiBack1.mp3"
+  ],
+  "rain": [
+   "rain0.mp3"
+  ]
+ },
+ "instruments": {
+  "zither": [
+   {
+    "file": "zither0.mp3",
+    "midi": 49.2
+   },
+   {
+    "file": "zither1.mp3",
+    "midi": 54.03
+   },
+   {
+    "file": "zither2.mp3",
+    "midi": 56.12
+   },
+   {
+    "file": "zither3.mp3",
+    "midi": 59.0
+   },
+   {
+    "file": "zither4.mp3",
+    "midi": 61.41
+   },
+   {
+    "file": "zither5.mp3",
+    "midi": 63.11
+   },
+   {
+    "file": "zither6.mp3",
+    "midi": 65.9
+   },
+   {
+    "file": "zither7.mp3",
+    "midi": 67.98
+   },
+   {
+    "file": "zither8.mp3",
+    "midi": 71.09
+   },
+   {
+    "file": "zither9.mp3",
+    "midi": 72.96
+   },
+   {
+    "file": "zither10.mp3",
+    "midi": 75.07
+   },
+   {
+    "file": "zither11.mp3",
+    "midi": 78.06
+   },
+   {
+    "file": "zither12.mp3",
+    "midi": 80.06
+   },
+   {
+    "file": "zither13.mp3",
+    "midi": 82.99
+   }
+  ],
+  "zitherTrem": [
+   {
+    "file": "zitherTrem0.mp3",
+    "midi": 60.69
+   },
+   {
+    "file": "zitherTrem1.mp3",
+    "midi": 66.12
+   }
+  ],
+  "zitherGliss": [
+   {
+    "file": "zitherGliss0.mp3",
+    "midi": null
+   },
+   {
+    "file": "zitherGliss1.mp3",
+    "midi": null
+   }
+  ],
+  "erhu": [
+   {
+    "file": "erhu0.mp3",
+    "midi": 61.77
+   },
+   {
+    "file": "erhu1.mp3",
+    "midi": 64.08
+   },
+   {
+    "file": "erhu2.mp3",
+    "midi": 67.02
+   },
+   {
+    "file": "erhu3.mp3",
+    "midi": 69.08
+   },
+   {
+    "file": "erhu4.mp3",
+    "midi": 72.01
+   },
+   {
+    "file": "erhu5.mp3",
+    "midi": 76.0
+   }
+  ],
+  "flute": [
+   {
+    "file": "flute0.mp3",
+    "midi": 72.16
+   },
+   {
+    "file": "flute1.mp3",
+    "midi": 76.02
+   },
+   {
+    "file": "flute2.mp3",
+    "midi": 81.07
+   }
+  ],
+  "taiko": [
+   {
+    "file": "taiko0.mp3",
+    "midi": null
+   },
+   {
+    "file": "taiko1.mp3",
+    "midi": null
+   }
+  ],
+  "drumLow": [
+   {
+    "file": "drumLow0.mp3",
+    "midi": null
+   }
+  ],
+  "drumHigh": [
+   {
+    "file": "drumHigh0.mp3",
+    "midi": null
+   }
+  ],
+  "timpani": [
+   {
+    "file": "timpani0.mp3",
+    "midi": null
+   }
+  ],
+  "logLow": [
+   {
+    "file": "logLow0.mp3",
+    "midi": null
+   }
+  ],
+  "logHigh": [
+   {
+    "file": "logHigh0.mp3",
+    "midi": null
+   }
+  ],
+  "woodblock": [
+   {
+    "file": "woodblock0.mp3",
+    "midi": null
+   }
+  ],
+  "cymbal": [
+   {
+    "file": "cymbal0.mp3",
+    "midi": null
+   }
+  ],
+  "gong": [
+   {
+    "file": "gong0.mp3",
+    "midi": null
+   },
+   {
+    "file": "gong1.mp3",
+    "midi": null
+   }
+  ]
+ }
+}

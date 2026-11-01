@@ -27,6 +27,10 @@ export class Animator {
   private fadeRate = 10;
   private locoBlend = 0;
   private phase = 0;
+  /** Locomotion cycle position, 0..1 (two footfalls per cycle). */
+  get stridePhase() {
+    return this.phase;
+  }
 
   constructor(readonly root: THREE.Object3D, private readonly loco: Locomotion) {
     this.mixer = new THREE.AnimationMixer(root);

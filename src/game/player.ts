@@ -119,6 +119,7 @@ export class Player {
   private healLeft = 0;
   private hurtFlash = 0;
   private hurtT = 0;
+  private lastStep = 0;
   private fireTrailTimer = 0;
   private readonly light: THREE.PointLight;
   private readonly shadow: THREE.Mesh;
@@ -933,6 +934,12 @@ export class Player {
     }
     r.model.rotation.y = spin;
     a.update(dt, this.state === 'free' || this.state === 'drink' ? this.speedNow : 0);
+    // Footsteps: two per locomotion cycle, on grass in the forest and stone in the temple.
+    const half = Math.floor(a.stridePhase * 2);
+    if (this.speedNow > 1.2 && half !== this.lastStep && this.state === 'free') {
+      this.game.audio.play(this.pos.z > -44 ? 'stepGrass' : 'stepStone');
+    }
+    this.lastStep = half;
 
     // Secondary motion: tail, sash tails and plumes trail behind movement.
     const t = this.game.time;

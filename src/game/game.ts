@@ -501,6 +501,9 @@ export class Game {
       e.hp = 0;
       e.kill();
       this.onEnemyKilled(e);
+      this.audio.play(e.kind === 'ghoul' || e.kind === 'weaver' ? 'ghoulDie' : e.isBoss ? 'roar' : 'creatureDie');
+    } else if (dir && (e.kind === 'ghoul' || e.kind === 'weaver') && chance(0.35)) {
+      this.audio.play('ghoulHurt');
     }
   }
 
@@ -998,9 +1001,11 @@ export class Game {
       dt *= 0.35;
     }
 
+    this.audio.title = this.state === 'menu';
     if (this.state === 'menu') {
       this.time += rawDt;
       this.titleShot(rawDt);
+      this.audio.update(rawDt);
       this.rain.update(rawDt, this.camRig.target);
       this.level.update(rawDt, this.time, this.camRig.target);
       this.vfx.update(rawDt);
