@@ -592,6 +592,8 @@ export class Menus {
       <div class="tab-title"><h2>Settings</h2></div>
       <div class="settings-list">
         ${cyc('quality', 'Graphics', [['low', 'Low (coolest)'], ['medium', 'Medium'], ['high', 'High']])}
+        ${cyc('look', 'Visual style', [['pixel', 'Retro pixel'], ['smooth', 'Smooth']])}
+        ${cyc('camera', 'Camera', [['iso', 'Isometric'], ['third', 'Third person'], ['side', 'Side view (2D)'], ['cinema', 'Cinematic']])}
         ${cyc('fpsCap', 'Frame rate', [[30, '30 fps · battery saver'], [60, '60 fps'], [0, 'Unlimited']])}
         ${cyc('dynamicRes', 'Auto resolution', [[true, 'On'], [false, 'Off']])}
         ${cyc('screenShake', 'Screen shake & rumble', [[1, 'Full'], [0.5, 'Reduced'], [0, 'Off']])}

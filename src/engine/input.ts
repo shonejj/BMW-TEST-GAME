@@ -1,4 +1,4 @@
-export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack' | 'gourd' | 'heavy';
+export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack' | 'gourd' | 'heavy' | 'camera';
 
 const KEY_ACTIONS: Record<string, Action> = {
   Space: 'dodge', ShiftLeft: 'dodge', ShiftRight: 'dodge', KeyK: 'dodge',
@@ -6,7 +6,7 @@ const KEY_ACTIONS: Record<string, Action> = {
   Digit2: 'skill1', KeyE: 'skill1',
   Digit3: 'skill2', KeyR: 'skill2',
   Digit4: 'skill3', KeyF: 'skill3',
-  KeyT: 'transform', KeyV: 'transform',
+  KeyT: 'transform', KeyV: 'transform', KeyC: 'camera',
   KeyI: 'inventory', Tab: 'inventory',
   Escape: 'pause', KeyP: 'pause',
   KeyJ: 'attack',
@@ -18,7 +18,7 @@ const KEY_ACTIONS: Record<string, Action> = {
 // X = light attack (held), Y = heavy attack (held).
 const PAD_ACTIONS: [number, Action][] = [
   [0, 'dodge'], [1, 'gourd'], [4, 'skill0'], [5, 'skill1'], [6, 'skill2'], [7, 'skill3'],
-  [11, 'transform'], [12, 'transform'], [8, 'inventory'], [9, 'pause'],
+  [11, 'transform'], [12, 'transform'], [8, 'inventory'], [9, 'pause'], [13, 'camera'],
 ];
 
 /**

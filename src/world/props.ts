@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { seeded } from '../engine/util';
 import { lacquerTexture, roofTileTexture } from './textures';
+import { focusUniform } from './nature';
 
 /**
  * Procedural low-poly environment kit: temple architecture, foliage, rocks
@@ -11,8 +12,41 @@ import { lacquerTexture, roofTileTexture } from './textures';
 
 const rng = seeded(7);
 
-export const vcMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-export const vcMaterialDouble = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide });
+/**
+ * Dissolves anything tall that stands on the line between the hero and the camera (dithered discard), so lanterns,
+ * pillars and walls never hide the fight whichever camera style is active.
+ */
+function dissolveBlockers<T extends THREE.Material>(m: T): T {
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uFocus = focusUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vDW;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec4 dw = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          dw = instanceMatrix * dw;
+        #endif
+        vDW = (modelMatrix * dw).xyz;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vDW;\nuniform vec3 uFocus;')
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+        {
+          vec3 camVec = cameraPosition - uFocus;
+          float camDist = length(camVec);
+          vec3 toCam = camVec / camDist;
+          vec3 rel = vDW - uFocus;
+          float t = dot(rel, toCam);
+          float perp = length(rel - toCam * t);
+          float f = smoothstep(2.1, 0.7, perp) * smoothstep(0.3, 1.2, t) * smoothstep(camDist, camDist - 2.0, t) * smoothstep(0.9, 1.6, rel.y) * 0.9;
+          if (f > 0.0 && fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) < f) discard;
+        }`);
+  };
+  m.customProgramCacheKey = () => 'dissolveBlockers';
+  return m;
+}
+
+export const vcMaterial = dissolveBlockers(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+export const vcMaterialDouble = dissolveBlockers(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }));
 
 /** Gives a geometry a flat vertex colour (with slight per-vertex jitter). */
 export function colored(geo: THREE.BufferGeometry, color: THREE.ColorRepresentation, jitter = 0.06) {

@@ -4,6 +4,8 @@ import { getAssets } from '../game/assets';
 /** Shared clock for wind on every foliage material. */
 export const windUniform = { value: 0 };
 /** Point the camera follows; tall foliage between it and the camera dissolves so it never hides the fight. */
+/** Horizontal direction from the focus towards the camera (x, z), kept in sync with the camera yaw. */
+export const camDirUniform = { value: new THREE.Vector2(0.7071, 0.7071) };
 export const focusUniform = { value: new THREE.Vector3() };
 
 export interface PropPart {
@@ -38,8 +40,9 @@ function convert(src: THREE.Material, sway: number, fade: boolean): THREE.Materi
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uWind = windUniform;
       shader.uniforms.uFocus = focusUniform;
+      shader.uniforms.uCamDir = camDirUniform;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform vec3 uFocus;\nvarying float vFade;')
+        .replace('#include <common>', '#include <common>\nuniform float uWind;\nuniform vec3 uFocus;\nuniform vec2 uCamDir;\nvarying float vFade;')
         .replace(
           '#include <begin_vertex>',
           `#include <begin_vertex>
@@ -55,10 +58,10 @@ function convert(src: THREE.Material, sway: number, fade: boolean): THREE.Materi
           transformed.x += w * h;
           transformed.z += w * h * 0.6;` : ''}
           ${fade ? `
-          // The camera sits up and to the south-east (+X, +Z) of the focus (see CameraRig.yaw).
+          // uCamDir points from the focus towards the camera (see CameraRig.yaw).
           vec2 rel = origin.xz - uFocus.xz;
-          float along = dot(rel, vec2(0.7071, 0.7071));
-          float perp = abs(dot(rel, vec2(0.7071, -0.7071)));
+          float along = dot(rel, uCamDir);
+          float perp = abs(dot(rel, vec2(uCamDir.y, -uCamDir.x)));
           vFade = smoothstep(4.8, 2.2, perp) * smoothstep(-1.5, 1.0, along) * smoothstep(15.0, 10.0, along) * 0.88;` : ''}`,
         );
       shader.fragmentShader = shader.fragmentShader

@@ -10,6 +10,8 @@ import { Menus } from '../ui/menus';
 import { Debris } from '../world/debris';
 import { Level, type Breakable, type SpawnKind } from '../world/level';
 import { Rain } from '../world/weather';
+import { camDirUniform } from '../world/nature';
+import { CAMERA_MODES, type CameraMode } from '../engine/camera';
 import { Boss, Enemy, EnemyOverlays, Ghoul, Spider, Weaver } from './enemies';
 import {
   BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
@@ -140,9 +142,10 @@ export class Game {
       writeSettings(this.settings);
     }
     this.renderer.setQuality(this.settings.quality);
+    this.renderer.setLook(this.settings.look);
     this.camRig = new CameraRig(this.renderer.camera);
+    this.camRig.setMode(this.settings.camera);
     this.input = new Input(this.renderer.renderer.domElement);
-    this.input.camYaw = this.camRig.yaw;
     this.hud = new Hud(container);
     const unlock = () => this.audio.unlock();
     this.controls = new Controls(container, this.input, this.touch, unlock);
@@ -178,7 +181,7 @@ export class Game {
     this.updateParticleScale();
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
-    this.camRig.snap(this.player.pos);
+    this.camRig.snap(this.player.pos, this.player.yaw);
     this.prewarmShaders();
     this.toMainMenu();
     this.renderer.renderer.setAnimationLoop(() => this.loop());
@@ -195,7 +198,11 @@ export class Game {
     const hidden = new THREE.Vector3(0, -60, 0);
     for (const k of ['gale', 'fire', 'web', 'feather'] as const) this.projectile(k, hidden, 0, 0, 0, 0, 'enemy', 0);
     const dummies = (['spiderling', 'armored', 'weaver', 'ghoul', 'ghoul', 'boss'] as const).map((k) => this.spawnEnemy(k, 1, hidden.clone()));
+    // Compile for the target the frame will actually use (the pixel pass renders into a render target,
+    // which changes the shader variants), so nothing compiles mid-game.
+    this.renderer.renderer.setRenderTarget(this.renderer.activeTarget);
     this.vfx.prewarm(this.renderer.renderer, this.renderer.camera);
+    this.renderer.renderer.setRenderTarget(null);
     for (const d of dummies) d.dispose();
     this.enemies = [];
     this.boss = null;
@@ -213,6 +220,7 @@ export class Game {
 
   toMainMenu() {
     this.state = 'menu';
+    this.hud.setLetterbox(false);
     // The title shot frames the hero by the first shrine, with no leftover fight around him.
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
@@ -255,11 +263,12 @@ export class Game {
     const cleared = save ? Math.min(save.cleared, this.level.zones.length - 1) : 0;
     this.resetWorld(cleared);
     this.player.respawn(this.level.zones[cleared].checkpoint);
-    this.camRig.snap(this.player.pos);
+    this.camRig.snap(this.player.pos, this.player.yaw);
     this.menus.close();
     this.hud.setVisible(true);
     this.controls.setVisible(true);
     this.state = 'playing';
+    this.hud.setLetterbox(this.settings.camera === 'cinema');
     this.lastZoneName = '';
     if (cleared === 0 && this.settings.cutscenes) this.playIntro();
     else this.hud.showTitle(cleared === 0 ? 'Chapter One' : `Chapter One · ${this.ng ? 'Torment ' + this.ng : 'Continue'}`, cleared === 0 ? 'Mountain-Sea Temple' : this.level.zones[cleared].name);
@@ -298,10 +307,28 @@ export class Game {
       this.updateParticleScale();
     }
     if (p.screenShake !== undefined) this.camRig.shakeScale = p.screenShake;
+    if (p.look) { this.renderer.setLook(p.look); this.updateParticleScale(); }
+    if (p.camera) this.setCameraMode(p.camera, false);
     if (p.dynamicRes === false) { this.renderer.dynamicScale = 1; this.renderer.applyPixelRatio(); this.updateParticleScale(); }
     if (p.volume !== undefined) this.audio.setVolume(p.volume);
     if (p.music !== undefined) this.audio.setMusicVolume(p.music);
     writeSettings(this.settings);
+  }
+
+  /** Switches camera style; cinematic mode adds letterbox bars while playing. */
+  setCameraMode(m: CameraMode, save = true) {
+    this.camRig.setMode(m);
+    this.settings.camera = m;
+    this.hud.setLetterbox(m === 'cinema' && this.state === 'playing');
+    if (save) {
+      writeSettings(this.settings);
+      this.hud.toast(CAMERA_MODES.find(([id]) => id === m)![1] + ' camera', '#ffe3a0');
+    }
+  }
+
+  cycleCamera() {
+    const i = CAMERA_MODES.findIndex(([id]) => id === this.settings.camera);
+    this.setCameraMode(CAMERA_MODES[(i + 1) % CAMERA_MODES.length][0]);
   }
 
   /** Clears all actors and restores zones: the first `cleared` zones count as done. */
@@ -356,7 +383,7 @@ export class Game {
     });
     this.player.respawn(this.level.zones[idx].checkpoint);
     this.level.shrines[idx]?.setLit(true);
-    this.camRig.snap(this.player.pos);
+    this.camRig.snap(this.player.pos, this.player.yaw);
     this.camRig.setZoom(1);
     this.menus.close();
     this.state = 'playing';
@@ -369,7 +396,7 @@ export class Game {
     this.ng++;
     this.resetWorld(0);
     this.player.respawn(this.level.zones[0].checkpoint);
-    this.camRig.snap(this.player.pos);
+    this.camRig.snap(this.player.pos, this.player.yaw);
     this.menus.close();
     this.state = 'playing';
     this.hud.setVisible(true);
@@ -989,11 +1016,14 @@ export class Game {
   }
 
   private frame(rawDt: number) {
+    this.input.camYaw = this.camRig.yaw;
+    camDirUniform.value.set(Math.sin(this.camRig.yaw), Math.cos(this.camRig.yaw));
     this.input.update();
     if (this.input.consume('pause')) {
       if (this.state === 'playing') this.pause();
       else if (this.state === 'paused') this.resume();
     }
+    if (this.input.consume('camera') && (this.state === 'playing' || this.state === 'dead')) this.cycleCamera();
     if (this.input.consume('inventory')) {
       if (this.state === 'playing') this.openInventory();
       else if (this.state === 'paused' && this.menus.current === 'game') this.resume();
@@ -1051,7 +1081,7 @@ export class Game {
     if (this.cutscene) {
       if (this.input.anyPress && this.cutscene.elapsed > 0.4) this.cutscene.skip();
       this.cutscene?.update(rawDt);
-    } else this.camRig.update(rawDt, pl.pos);
+    } else this.camRig.update(rawDt, pl.pos, pl.yaw, this.time);
     this.input.anyPress = false;
     if (this.state === 'paused' && this.menus.current === 'game') this.portraitShot(rawDt);
     this.overlays.update(this.enemies, this.renderer.camera);
@@ -1107,7 +1137,7 @@ export class Game {
     }, shots, () => {
       this.cutscene = null;
       this.input.suppressed = false;
-      this.camRig.snap(this.player.pos);
+      this.camRig.snap(this.player.pos, this.player.yaw);
       if (this.state === 'playing') this.controls.setVisible(true);
       after();
     });

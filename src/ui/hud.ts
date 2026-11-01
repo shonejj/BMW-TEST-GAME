@@ -137,9 +137,16 @@ export class Hud {
     }
   }
 
+  /** Letterbox bars only (cinematic camera style), HUD stays. */
+  setLetterbox(on: boolean) {
+    this.letterbox.classList.toggle('on', on);
+    this.skipHint.style.display = on ? 'none' : '';
+  }
+
   /** Cinematic mode: letterbox bars, gameplay HUD hidden. */
   setCinematic(on: boolean) {
     this.letterbox.classList.toggle('on', on);
+    this.skipHint.style.display = '';
     this.root.classList.toggle('cinematic', on);
     if (!on) this.subtitle.classList.remove('show');
   }
