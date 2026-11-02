@@ -105,7 +105,51 @@ const NATURE = [
   'Bush_Common', 'Bush_Common_Flowers', 'Bush_Large', 'Fern_1', 'Fern_2', 'Plant_1', 'Plant_7', 'Flower_3_Group',
   'Flower_4_Group', 'Clover_1', 'Grass_Common_Short', 'Grass_Common_Tall', 'Grass_Wispy_Tall', 'Rock_Medium_1',
   'Rock_Medium_2', 'Rock_Medium_3', 'Pebble_Round_1', 'Mushroom_Common',
+  // Round 4 (world track): cliffs, lush undergrowth, stepping stones and blossom for the temple hill.
+  'Rock_Big_1', 'Rock_Big_2', 'Rock_Medium_4', 'GiantPine_1', 'Bush_Long_1', 'Bush_Large_Flowers', 'Grass_Wide_Tall',
+  'Grass_Wispy_Short', 'Plant_1_Big', 'Plant_2', 'Mushroom_RedCap',
 ];
+
+/**
+ * Props from other CC0 packs, as [name in the game, file, ...node names to fold into one mesh].
+ * Folding keeps a multi-node model (trunk + snow cap) as one named prop; a chest and its lid stay separate
+ * props so the lid can swing open.
+ */
+const FLOBIT = process.env.FLOBIT_DIR ?? '/home/user/flo-bit/low-poly-asset-packs/nature-pack/glb';
+const KAYKIT = process.env.KAYKIT_DIR ?? '/home/user/kaykit-game-assets/kaykit-dungeon-remastered-1.0/addons/kaykit_dungeon_remastered/Assets/gltf';
+const EXTRA = [
+  ['SnowPine_1', pjoin(FLOBIT, 'pine_tree_1_snow.glb')],
+  ['SnowPine_3', pjoin(FLOBIT, 'pine_tree_3_snow.glb')],
+  ['SnowTree_2', pjoin(FLOBIT, 'common_tree_2_snow.glb')],
+  ['BareTree_1', pjoin(FLOBIT, 'dead_tree_1.glb')],
+  ['BareTree_3', pjoin(FLOBIT, 'dead_tree_3.glb')],
+  ['Stump_1', pjoin(FLOBIT, 'tree_stump_1.glb')],
+  ['Chest', pjoin(KAYKIT, 'chest.glb'), 'chest'],
+  ['Chest_Lid', pjoin(KAYKIT, 'chest.glb'), 'chest_lid'],
+  ['ChestGold', pjoin(KAYKIT, 'chest_gold.glb'), 'chest_gold'],
+  ['ChestGold_Lid', pjoin(KAYKIT, 'chest_gold.glb'), 'chest_gold_lid'],
+  ['Pillar', pjoin(KAYKIT, 'pillar.gltf.glb')],
+  ['Rubble', pjoin(KAYKIT, 'rubble_large.gltf.glb')],
+];
+
+/** Moves every mesh primitive of `nodes` (baked to their world transform) onto one new node called `name`. */
+async function foldNodes(doc, nodes, name) {
+  const { transformPrimitive } = await import('@gltf-transform/functions');
+  const mesh = doc.createMesh(name);
+  for (const n of nodes) {
+    const m = n.getMesh();
+    if (!m) continue;
+    for (const prim of m.listPrimitives()) {
+      const copy = prim.clone();
+      // Each copy gets its own vertex arrays before baking the transform.
+      for (const sem of copy.listSemantics()) copy.setAttribute(sem, copy.getAttribute(sem).clone());
+      if (copy.getIndices()) copy.setIndices(copy.getIndices().clone());
+      transformPrimitive(copy, n.getWorldMatrix());
+      mesh.addPrimitive(copy);
+    }
+  }
+  return doc.createNode(name).setMesh(mesh);
+}
 
 async function nature() {
   const dir = pjoin(SRC, 'stylized-nature-megakit/glTF');
@@ -118,6 +162,16 @@ async function nature() {
     const map = mergeDocuments(doc, part);
     for (const s of part.getRoot().listScenes()) for (const n of s.listChildren()) scene.addChild(map.get(n));
   }
+  for (const [name, file, ...only] of EXTRA) {
+    const part = await io.read(file);
+    const map = mergeDocuments(doc, part);
+    const nodes = part.getRoot().listNodes().filter((n) => n.getMesh() && (!only.length || only.includes(n.getName())));
+    // A lid is a child of its chest in the source: fold it on its own so it keeps its hinge offset.
+    scene.addChild(await foldNodes(doc, nodes.map((n) => map.get(n)), name));
+  }
+  for (const n of doc.getRoot().listNodes()) if (!n.getMesh() && !n.listChildren().length) n.dispose();
+  // Lambert in game ignores normal maps; dropping them saves most of the texture bytes.
+  for (const m of doc.getRoot().listMaterials()) m.setNormalTexture(null);
   for (const s of doc.getRoot().listScenes()) if (s !== scene) s.dispose();
   for (const b of doc.getRoot().listBuffers()) if (b !== buffer) b.dispose();
   for (const a of doc.getRoot().listAccessors()) a.setBuffer(buffer);

@@ -16,7 +16,7 @@ const rng = seeded(7);
  * Dissolves anything tall that stands on the line between the hero and the camera (dithered discard), so lanterns,
  * pillars and walls never hide the fight whichever camera style is active.
  */
-function dissolveBlockers<T extends THREE.Material>(m: T): T {
+export function dissolveBlockers<T extends THREE.Material>(m: T): T {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uFocus = focusUniform;
     shader.vertexShader = shader.vertexShader
@@ -211,6 +211,12 @@ function ensureTextures() {
   mats.pillar.needsUpdate = true;
 }
 
+/** Shared architecture materials (lacquered wood, stone, lantern glow, roof tiles) for other prop builders. */
+export function archMaterials() {
+  ensureTextures();
+  return { pillar: mats.pillar, stone: mats.stone, wood: mats.wood, lantern: mats.lantern, roof: getRoofMat() };
+}
+
 export interface PropResult {
   group: THREE.Group;
   colliders: { x: number; z: number; r: number }[];
@@ -343,7 +349,7 @@ export function templeHall(): PropResult {
 // Breakables
 // ---------------------------------------------------------------------------
 
-export type BreakableKind = 'barrel' | 'urn' | 'bell' | 'crate' | 'rock';
+export type BreakableKind = 'barrel' | 'urn' | 'bell' | 'crate' | 'rock' | 'rubble';
 
 export interface BreakableDef {
   mesh: THREE.Object3D;
@@ -383,6 +389,16 @@ export function breakable(kind: BreakableKind): BreakableDef {
       group.add(new THREE.Mesh(rockGeometry(Math.floor(rng() * 1000), 0x67635c), vcMaterial));
       group.scale.setScalar(0.7);
       return { mesh: group, radius: 0.7, hp: 2, color: 0x67635c, chunks: 9, chunkSize: 0.3 };
+    }
+    case 'rubble': {
+      // A cracked heap blocking a secret passage: a few hits bring it down.
+      const parts: THREE.BufferGeometry[] = [];
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        parts.push(T(rockGeometry(100 + i, i % 2 ? 0x5c574f : 0x6a645a).scale(0.75, 0.9, 0.75), Math.sin(a) * 0.8, i > 3 ? 0.9 : 0, Math.cos(a) * 0.5));
+      }
+      group.add(new THREE.Mesh(merge(parts), vcMaterial));
+      return { mesh: group, radius: 1.5, hp: 4, color: 0x625d55, chunks: 16, chunkSize: 0.4 };
     }
   }
 }

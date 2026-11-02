@@ -9,6 +9,7 @@ import { Hud, type Label } from '../ui/hud';
 import { Menus } from '../ui/menus';
 import { Debris } from '../world/debris';
 import { Level, type Breakable, type SpawnKind } from '../world/level';
+import { clearWorldSave } from '../world/worldsave';
 import { Rain } from '../world/weather';
 import { camDirUniform } from '../world/nature';
 import { CAMERA_MODES, type CameraMode } from '../engine/camera';
@@ -171,6 +172,7 @@ export class Game {
   boot() {
     const q = this.settings.quality;
     this.level.build(q);
+    this.wireExplore();
     this.vfx = new Vfx(this.renderer.scene, q === 'low' ? 800 : 1600);
     this.debris = new Debris(this.renderer.scene, (x, z) => this.level.heightAt(x, z));
     this.rain = new Rain(1400);
@@ -262,7 +264,9 @@ export class Game {
   private applyChapter(n: number) {
     this.chapter = n;
     const c = CHAPTERS[n];
+    const before = this.level.chapterIndex;
     this.level.applyChapter(c);
+    if (this.level.chapterIndex !== before && this.miniMap) this.miniMap = this.level.renderMinimap();
     this.rain.setStyle(c.theme.weather, c.theme.weatherColor);
     this.rain.setVisibleCount(Math.min(c.theme.weatherCount, this.settings.quality === 'low' ? 350 : this.settings.quality === 'medium' ? 650 : 1400));
     this.renderer.setGrade(c.theme.grade, c.theme.saturation);
@@ -336,6 +340,7 @@ export class Game {
       this.playTime = save.playTime;
       setNextItemId(save.nextItemId);
     } else {
+      clearWorldSave();
       this.player.level = 1;
       this.player.xp = 0;
       this.player.talents = {};
@@ -438,6 +443,7 @@ export class Game {
       b.def.mesh.visible = true;
     }
     this.level.shrines.forEach((s, i) => { s.setLit(i <= cleared); s.armed = true; });
+    this.level.resetExplore();
     this.victoryTimer = -1;
     this.camRig.setZoom(1);
   }
@@ -464,6 +470,7 @@ export class Game {
     });
     this.player.respawn(this.level.zones[idx].checkpoint);
     this.level.shrines[idx]?.setLit(true);
+    this.level.resetExplore();
     this.camRig.snap(this.player.pos, this.player.yaw);
     this.camRig.setZoom(1);
     this.menus.close();
@@ -476,6 +483,7 @@ export class Game {
   newGamePlus() {
     this.ng++;
     this.progress = CHAPTERS.map(() => 0);
+    clearWorldSave();
     this.startChapter(0, false);
     this.hud.showTitle(`Torment ${this.ng}`, CHAPTERS[0].place);
   }
@@ -690,11 +698,11 @@ export class Game {
     for (const [kind, count] of wave.kinds) {
       for (let i = 0; i < count; i++) {
         if (kind === 'boss' || kind === 'tiger' || kind === 'bonelady') {
-          this.spawnEnemy(kind, lvl, new THREE.Vector3(0, this.level.heightAt(0, -141), -141), false, zoneIndex);
+          this.spawnEnemy(kind, lvl, this.level.bossSpot.clone(), false, zoneIndex);
           continue;
         }
         const at = this.level.randomPointIn(z.area, 1.2, this.player.pos, 6);
-        const elite = !!wave.elite && !eliteGiven && kind === 'armored';
+        const elite = !!wave.elite && !eliteGiven && kind === (wave.eliteKind ?? 'armored');
         if (elite) eliteGiven = true;
         this.spawnEnemy(kind, lvl, at, elite, zoneIndex);
       }
@@ -1171,6 +1179,9 @@ export class Game {
         this.player.update(dt);
         this.updateDirector(dt);
         this.updateShrines();
+        if (this.state === 'playing' && !this.cutscene) {
+          this.level.updateExplore(dt, this.time, this.player.pos, this.zoneState.some((s) => s === 'active'), this.currentLevel() - this.ng * 8);
+        }
         // During cutscenes only the boss's entrance animation keeps running.
         for (const e of this.enemies) if (!this.cutscene || (e instanceof Boss && e.introPlaying)) e.update(dt);
         this.enemies = this.enemies.filter((e) => !e.removed);
@@ -1257,21 +1268,25 @@ export class Game {
   private playIntro() {
     const p = this.player.pos;
     const c = CHAPTERS[this.chapter];
+    // Fly over the map: from above the boss arena, then back down the route towards the hero.
+    const b = this.level.bossSpot, r = this.level.route;
+    const mid = r[Math.floor(r.length * 0.55)] ?? b, low = r[Math.floor(r.length * 0.25)] ?? p;
     this.startCutscene([
-      { dur: 4.6, from: { pos: v(-12, 17, -116), look: v(0, 7, -160) }, to: { pos: v(7, 11, -128), look: v(0, 6, -158) }, subtitle: c.intro[0] },
-      { dur: 4.4, from: { pos: v(-14, 16, -112), look: v(0, 4, -100) }, to: { pos: v(10, 12, -84), look: v(0, 1, -66) }, subtitle: c.intro[1] },
+      { dur: 4.6, from: { pos: v(b.x - 12, b.y + 12, b.z + 25), look: v(b.x, b.y + 2, b.z - 20) }, to: { pos: v(b.x + 7, b.y + 6, b.z + 13), look: v(b.x, b.y + 1, b.z - 18) }, subtitle: c.intro[0] },
+      { dur: 4.4, from: { pos: v(mid.x - 14, mid.y + 12, mid.z - 10), look: v(mid.x, mid.y, mid.z + 2) }, to: { pos: v(low.x + 10, low.y + 11, low.z - 6), look: v(low.x, low.y + 1, low.z + 12) }, subtitle: c.intro[1] },
       { dur: 4.2, from: { pos: v(-8, 9, 18), look: v(p.x, 1, p.z) }, to: { pos: v(p.x + 2, 6.5, p.z + 8), look: v(p.x, 1.2, p.z - 1) },
         title: [c.title, c.place], subtitle: c.intro[2] },
     ]);
   }
 
   private playBossIntro() {
-    const b = v(0, 5, -141);
+    const s = this.level.bossSpot;
+    const b = v(s.x, s.y, s.z);
     const c = CHAPTERS[this.chapter];
     this.startCutscene([
-      { dur: 2.6, from: { pos: v(0, 11, -122), look: v(0, 9, -146) }, to: { pos: v(-5, 7, -128), look: v(0, 6, -141) },
+      { dur: 2.6, from: { pos: v(b.x, b.y + 6, b.z + 19), look: v(b.x, b.y + 4, b.z - 5) }, to: { pos: v(b.x - 5, b.y + 2, b.z + 13), look: v(b.x, b.y + 1, b.z) },
         onStart: () => this.audio.play('roar'), subtitle: c.bossIntro[0] },
-      { dur: 3.2, from: { pos: v(6, 6.5, -134), look: v(b.x, 7, b.z) }, to: { pos: v(4, 7.5, -132), look: v(b.x, 8, b.z) }, title: [this.level.zones[this.level.zones.length - 1].name, c.bossName],
+      { dur: 3.2, from: { pos: v(b.x + 6, b.y + 1.5, b.z + 7), look: v(b.x, b.y + 2, b.z) }, to: { pos: v(b.x + 4, b.y + 2.5, b.z + 9), look: v(b.x, b.y + 3, b.z) }, title: [this.level.zones[this.level.zones.length - 1].name, c.bossName],
         subtitle: c.bossIntro[1] },
       { dur: 2.6, from: { pos: v(this.player.pos.x + 3, 8, this.player.pos.z + 7), look: v(this.player.pos.x, 6, this.player.pos.z) }, to: { pos: v(this.player.pos.x + 1, 7, this.player.pos.z + 6), look: v(this.player.pos.x, 6, this.player.pos.z - 2) },
         subtitle: c.bossIntro[2] },
@@ -1283,7 +1298,8 @@ export class Game {
     this.startCutscene([
       { dur: 5, from: { pos: v(p.x + 7, p.y + 4, p.z + 5), look: v(p.x, p.y + 1.2, p.z) }, to: { pos: v(p.x - 6, p.y + 3, p.z + 6), look: v(p.x, p.y + 1.4, p.z) },
         subtitle: ['Little Monkey', 'One down. The mountain still remembers the Great Sage.'] },
-      { dur: 3.5, from: { pos: v(0, 14, -126), look: v(0, 8, -160) }, to: { pos: v(0, 20, -118), look: v(0, 9, -160) }, subtitle: ['', 'The temple bells ring again.'],
+      { dur: 3.5, from: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 9, this.level.bossSpot.z + 15), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 3, this.level.bossSpot.z - 19) },
+        to: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 15, this.level.bossSpot.z + 23), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 4, this.level.bossSpot.z - 19) }, subtitle: ['', 'The temple bells ring again.'],
         onStart: () => this.audio.play('seal') },
     ], () => this.showVictory());
   }
@@ -1311,11 +1327,56 @@ export class Game {
     this.save(last ? 'torment' : 'advance');
   }
 
+  /** Hooks the map's chests, collectables and guarded encounters into loot, XP and spawning. */
+  private wireExplore() {
+    const L = this.level;
+    L.onNotice = (text, color) => this.hud.toast(text, color);
+    L.onChestOpen = (c) => {
+      const lvl = this.currentLevel();
+      this.audio.play(c.tier > 1 ? 'legendary' : 'seal');
+      this.vfx.beam(c.pos, COLORS.gold, 6, 0.8, 1.2);
+      this.vfx.sparks.emit(c.pos.x, c.pos.y + 1, c.pos.z, { count: 30, radius: 0.6, speed: [0.5, 2], up: [2, 6], gravity: -4, life: [0.5, 1.1], color: COLORS.goldHot, color2: COLORS.gold });
+      const piles = c.tier === 1 ? 2 : 4;
+      for (let i = 0; i < piles; i++) this.dropGold(c.pos, randInt(6, 14) * lvl * c.tier);
+      const items = c.tier === 1 ? 1 : c.tier === 2 ? 2 : 3;
+      for (let i = 0; i < items; i++) this.dropItem(c.pos, lvl + (c.tier - 1), [10, 35, 60][c.tier - 1] + this.ng * 4);
+      this.hud.toast(c.tier === 3 ? 'Sealed chest opened' : c.tier === 2 ? 'Ornate chest opened' : 'Chest opened', '#ffd27a');
+    };
+    L.onCollect = (c) => {
+      this.vfx.twinkle(c.pos, 1.2, 10);
+      this.audio.play('focus');
+      if (c.kind === 'herb') {
+        this.player.heal(this.player.stats.maxHp * 0.35);
+        this.gainXp(10 * this.currentLevel());
+        this.hud.toast('Spirit herb · health restored', '#7dff9a');
+      } else if (c.kind === 'relic') {
+        this.gainXp(40 * this.currentLevel());
+        this.dropGold(c.pos, 30 * this.currentLevel());
+        this.hud.toast('Relic shard found', '#ffd27a');
+      } else {
+        this.hud.toast(c.text ?? 'A lore note', '#c8d8ff');
+      }
+    };
+    L.onEncounter = (e) => {
+      let eliteGiven = false, n = 0;
+      const out: Enemy[] = [];
+      for (const [kind, count] of e.kinds) {
+        for (let i = 0; i < count; i++) {
+          const elite = !eliteGiven && kind === e.elite;
+          if (elite) eliteGiven = true;
+          out.push(this.spawnEnemy(kind, e.level + this.ng * 8, e.points[n++ % e.points.length].clone(), elite));
+        }
+      }
+      this.audio.play('skitter');
+      return out;
+    };
+  }
+
   /** Walking up to a Keeper's Shrine (outside a fight) lights it: heal, refill, save, set respawn. */
   private updateShrines() {
     const p = this.player;
     if (!p.alive || this.state !== 'playing') return;
-    const fighting = this.zoneState.some((s) => s === 'active');
+    const fighting = this.zoneState.some((s) => s === 'active') || this.level.exploreFighting;
     this.level.shrines.forEach((s, i) => {
       const d = Math.hypot(p.pos.x - s.pos.x, p.pos.z - s.pos.z);
       if (d > 4) s.armed = true;
@@ -1344,7 +1405,7 @@ export class Game {
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i];
       const st = this.zoneState[i];
-      if (st === 'idle' && p.z < z.triggerZ && (i === 0 || this.zoneState[i - 1] === 'cleared' || zones[i - 1].opensGate === undefined)) {
+      if (st === 'idle' && this.level.zoneTriggered(i, p) && (i === 0 || this.zoneState[i - 1] === 'cleared' || zones[i - 1].opensGate === undefined)) {
         this.zoneState[i] = 'active';
         this.zoneWave[i] = 0;
         this.spawnWave(i);
@@ -1382,10 +1443,10 @@ export class Game {
       if (this.zoneState[i] === 'active' && i < zones.length - 1) this.hud.setObjective(`Defeat the yaoguai · ${remaining} left`);
     }
     // Location name
-    const here = [...zones].reverse().find((z) => p.z < z.checkpoint.z + 0.5) ?? zones[0];
-    if (here.name !== this.lastZoneName) {
-      this.lastZoneName = here.name;
-      this.hud.setLocation(here.name);
+    const here = this.level.locationAt(p.x, p.z);
+    if (here !== this.lastZoneName) {
+      this.lastZoneName = here;
+      this.hud.setLocation(here);
     }
   }
 

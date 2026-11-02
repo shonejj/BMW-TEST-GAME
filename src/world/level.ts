@@ -8,14 +8,25 @@ import type { ChapterDef } from '../game/chapters';
 import { buildShrine, type Shrine } from './shrine';
 import {
   balustrade, breakable, brokenPillar, colored, guardianStatue,
-  pavilion, pineGeometry, rockGeometry, sealBarrier, stoneLantern, templeHall, vcMaterial,
+  pavilion, pineGeometry, stoneLantern, templeHall, vcMaterial, sealBarrier,
   type BreakableDef, type BreakableKind, type PropResult,
 } from './props';
+import {
+  banner, bigSkull, bonePile, boulder, brazierStand, hoodoo, iceSpire, overhang, paifang, ribArch, rockArch, stele, tent,
+} from './setpieces';
+import { Terrain, shapeDistance, type Floor, type Shape } from './terrain';
+import { buildIce, buildWater, waterTime } from './water';
+import { Explore, type ChestInfo, type CollectInfo, type EncounterInfo, type Spawned } from './explore';
+import { LAYOUTS } from './layouts';
+import type { LayoutDef, PropPlace } from './layouts/types';
+
+export type { ChestInfo, CollectInfo, EncounterInfo, Spawned } from './explore';
 
 /**
- * Chapter 1, "Mountain-Sea Temple". The level runs from south (+Z, near the
- * camera) to north (-Z): forest clearing → temple courtyard → stone stairs →
- * upper plaza → boss arena in front of the main hall.
+ * A chapter's map. Each chapter has its own hand-designed layout (src/world/layouts/*): a heightfield with
+ * ridges, cliffs, stairs and bridges, water, set dressing, foliage, shrines, gates, chests and secrets.
+ * `applyChapter` builds the map for a chapter (and re-tints lights/fog); the rest of the game talks to the
+ * level only through the queries below (heights, walkability, movement with wall sliding, zones).
  */
 
 interface Rect { x0: number; x1: number; z0: number; z1: number }
@@ -39,11 +50,14 @@ export interface Gate {
 }
 
 export type SpawnKind = 'spiderling' | 'armored' | 'weaver' | 'ghoul' | 'wolf' | 'archer' | 'bone' | 'frost' | 'boss' | 'tiger' | 'bonelady';
-export interface WaveDef { kinds: [SpawnKind, number][]; elite?: boolean }
+/** `eliteKind`: the first enemy of this kind in an elite wave is the elite (default 'armored'). */
+export interface WaveDef { kinds: [SpawnKind, number][]; elite?: boolean; eliteKind?: SpawnKind }
 export interface ZoneDef {
   name: string;
   checkpoint: THREE.Vector3;
+  /** Legacy straight-line trigger (z); use Level.zoneTriggered, which tests the zone's trigger shape. */
   triggerZ: number;
+  trigger: Shape;
   area: Rect;
   level: number;
   waves: WaveDef[];
@@ -51,89 +65,74 @@ export interface ZoneDef {
   closesGate?: number;
 }
 
-export const STAIRS = { z0: -80, z1: -100, h: 5 };
-
-const WALK_RECTS: Rect[] = [
-  { x0: -11, x1: 11, z0: -37, z1: 9 },     // forest clearing
-  { x0: -5, x1: 5, z0: -46, z1: -34 },     // path
-  { x0: -14, x1: 14, z0: -81, z1: -44 },   // courtyard
-  { x0: -6, x1: 6, z0: -102, z1: -78 },    // stairs
-  { x0: -16, x1: 16, z0: -123, z1: -100 }, // upper plaza
-  { x0: -6, x1: 6, z0: -127, z1: -121 },   // arena entrance
-];
-const WALK_CIRCLES: Circle[] = [{ x: 0, z: -139, r: 14 }];
-/** Extra flat ground (not walkable) under buildings. */
-const PADS: Rect[] = [
-  { x0: -21, x1: -9, z0: -11, z1: 1 },
-  { x0: 14, x1: 24, z0: -66, z1: -54 },
-  { x0: -26, x1: -16, z0: -118, z1: -106 },
-  { x0: 16, x1: 26, z0: -118, z1: -106 },
-  { x0: -14, x1: 14, z0: -172, z1: -152 },
-];
+const OBST_CELL = 4;
 
 export class Level {
+  /** Everything built for the current chapter's map (rebuilt on chapter change). */
   readonly group = new THREE.Group();
   readonly obstacles: Circle[] = [];
   readonly breakables: Breakable[] = [];
   readonly gates: Gate[] = [];
   /** Keeper's Shrines, one beside each zone's checkpoint (zones[i] ↔ shrines[i]). */
   readonly shrines: Shrine[] = [];
-  readonly zones: ZoneDef[];
+  readonly zones: ZoneDef[] = [];
+  /** Walkable extents of the current map (minimap frame). */
   readonly bounds = { x0: -34, x1: 34, z0: -160, z1: 14 };
-  private readonly rng = seeded(42);
+  /** Where the chapter boss spawns. */
+  readonly bossSpot = new THREE.Vector3();
+  /** Critical path from the first shrine to the boss. */
+  readonly route: THREE.Vector3[] = [];
+  terrain!: Terrain;
+  layout!: LayoutDef;
+  explore: Explore | null = null;
+  /** Index of the chapter whose map is built (-1 before the first build). */
+  chapterIndex = -1;
+
+  /** Exploration hooks (the game decides loot and spawns). */
+  onChestOpen?: (c: ChestInfo) => void;
+  onCollect?: (c: CollectInfo) => void;
+  onEncounter?: (e: EncounterInfo) => Spawned[];
+  onNotice?: (text: string, color: string) => void;
+
+  private rng = seeded(42);
   private quality: 'low' | 'medium' | 'high' = 'medium';
-  private stoneMat: THREE.MeshLambertMaterial | null = null;
+  private readonly lights = new THREE.Group();
   private moon: THREE.DirectionalLight | null = null;
   private hemi: THREE.HemisphereLight | null = null;
   private terrainMat: THREE.MeshLambertMaterial | null = null;
+  private stoneMat: THREE.MeshLambertMaterial | null = null;
   private readonly mist: THREE.Mesh[] = [];
+  private readonly owned: { dispose(): void }[] = [];
+  private obstHash = new Map<number, Circle[]>();
+  private regionList: { name: string; shape: Shape }[] = [];
+  private detail: ReturnType<typeof groundDetailTexture> | null = null;
+  private flag: ReturnType<typeof flagstoneTexture> | null = null;
 
-  constructor(private readonly scene: THREE.Scene) {
-    this.zones = [
-      {
-        name: 'Forest Clearing', checkpoint: new THREE.Vector3(0, 0, 5), triggerZ: -12, level: 1,
-        area: { x0: -10, x1: 10, z0: -35, z1: -8 },
-        waves: [{ kinds: [['ghoul', 3], ['spiderling', 3]] }, { kinds: [['spiderling', 4], ['ghoul', 2], ['weaver', 1]] }],
-        opensGate: 0,
-      },
-      {
-        name: 'Temple Courtyard', checkpoint: new THREE.Vector3(0, 0, -41), triggerZ: -50, level: 2,
-        area: { x0: -13, x1: 13, z0: -79, z1: -47 },
-        waves: [
-          { kinds: [['ghoul', 4], ['spiderling', 4], ['weaver', 1]] },
-          { kinds: [['armored', 1], ['spiderling', 6]], elite: true },
-          { kinds: [['ghoul', 4], ['spiderling', 4], ['weaver', 2]] },
-        ],
-        opensGate: 1,
-      },
-      {
-        name: 'Stone Stairs', checkpoint: new THREE.Vector3(0, 0, -78), triggerZ: -86, level: 3,
-        area: { x0: -5, x1: 5, z0: -101, z1: -88 },
-        waves: [{ kinds: [['ghoul', 5], ['spiderling', 4]] }, { kinds: [['armored', 1], ['ghoul', 3]] }],
-      },
-      {
-        name: 'Upper Plaza', checkpoint: new THREE.Vector3(0, 5, -101), triggerZ: -105, level: 4,
-        area: { x0: -15, x1: 15, z0: -121, z1: -104 },
-        waves: [
-          { kinds: [['ghoul', 6], ['spiderling', 6], ['weaver', 2]] },
-          { kinds: [['armored', 2], ['spiderling', 6]] },
-          { kinds: [['ghoul', 5], ['spiderling', 5], ['weaver', 2], ['armored', 1]], elite: true },
-        ],
-        opensGate: 2,
-      },
-      {
-        name: 'Hall of Black Feathers', checkpoint: new THREE.Vector3(0, 5, -118), triggerZ: -129, level: 6,
-        area: { x0: -12, x1: 12, z0: -150, z1: -128 },
-        waves: [{ kinds: [['boss', 1]] }],
-        closesGate: 2,
-      },
-    ];
+  constructor(private readonly scene: THREE.Scene) {}
+
+  // -------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------
+
+  /** One-time setup (lights, mist, shared textures) and the first chapter's map. */
+  build(quality: 'low' | 'medium' | 'high') {
+    this.quality = quality;
+    this.buildLights();
+    this.buildMist();
+    this.detail = groundDetailTexture(quality === 'low' ? 128 : 256);
+    this.flag = flagstoneTexture(quality === 'low' ? 256 : 512);
+    this.terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: this.detail.map, normalMap: this.detail.normalMap });
+    this.stoneMat = new THREE.MeshLambertMaterial({ map: this.flag.map, normalMap: this.flag.normalMap, normalScale: new THREE.Vector2(1.2, 1.2) });
+    this.scene.add(this.lights, this.group);
+    this.load(0);
   }
 
-  /** Re-skins the level for a chapter: zone names/waves, lighting, fog, ground and foliage colours. */
+  /** Builds the chapter's map if it isn't the current one, then applies its palette, fog and zone waves. */
   applyChapter(c: ChapterDef) {
+    if (c.id !== this.chapterIndex) this.load(c.id, c);
     c.zones.forEach((cz, i) => {
       const z = this.zones[i];
+      if (!z) return;
       z.name = cz.name;
       z.level = cz.level;
       z.waves = cz.waves;
@@ -146,42 +145,140 @@ export class Level {
     if (this.hemi) this.hemi.intensity = t.hemiIntensity;
     this.moon?.color.setHex(t.moon);
     if (this.moon) this.moon.intensity = t.moonIntensity;
-    this.terrainMat?.color.setHex(t.ground);
+    for (const m of this.mist) (m.material as THREE.MeshBasicMaterial).color.setHex(t.fog).lerp(new THREE.Color(0xc0d0d4), 0.5);
     setNatureTint(t.foliage);
+  }
+
+  private clear() {
+    this.explore?.dispose();
+    this.explore = null;
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      if (!m.userData.sharedGeo) m.geometry?.dispose();
+      if ((m as unknown as THREE.InstancedMesh).isInstancedMesh) (m as unknown as THREE.InstancedMesh).dispose();
+    });
+    for (const d of this.owned) d.dispose();
+    this.owned.length = 0;
+    this.group.clear();
+    this.obstacles.length = 0;
+    this.breakables.length = 0;
+    this.gates.length = 0;
+    this.shrines.length = 0;
+    this.zones.length = 0;
+    this.route.length = 0;
+    this.obstHash.clear();
+  }
+
+  private load(index: number, chapter?: ChapterDef) {
+    this.clear();
+    this.chapterIndex = index;
+    this.rng = seeded(42 + index * 101);
+    const L = (this.layout = LAYOUTS[index]);
+    this.terrain = new Terrain(L.terrain);
+    const wb = this.terrain.walkBox;
+    Object.assign(this.bounds, { x0: Math.floor(wb.x0 - 6), x1: Math.ceil(wb.x1 + 6), z0: Math.floor(wb.z0 - 6), z1: Math.ceil(wb.z1 + 6) });
+    this.bossSpot.set(L.boss[0], this.heightAt(L.boss[0], L.boss[1]), L.boss[1]);
+    for (const [x, z] of L.route) this.route.push(new THREE.Vector3(x, this.heightAt(x, z), z));
+    this.buildZones(chapter);
+    this.regionList = [...L.regions, ...this.zones.map((z) => ({ name: z.name, shape: z.trigger }))];
+    this.buildTerrainMesh();
+    this.buildPaving();
+    this.buildWater();
+    for (const p of L.props) this.placeProp(p);
+    this.buildShrines();
+    this.buildFoliage();
+    for (const [k, x, z] of L.breakables) this.addBreakable(k, x, z);
+    this.buildGates();
+    this.explore = new Explore(L, index, this, {
+      onChestOpen: (c) => this.onChestOpen?.(c),
+      onCollect: (c) => this.onCollect?.(c),
+      onEncounter: (e) => this.onEncounter?.(e) ?? [],
+      onNotice: (t, c) => this.onNotice?.(t, c),
+    });
+    this.obstacles.push(...this.explore.colliders);
+    this.group.add(this.explore.group);
+    this.bakeStatic();
+    this.hashObstacles();
+  }
+
+  private buildZones(chapter?: ChapterDef) {
+    const L = this.layout;
+    L.zones.forEach((lz, i) => {
+      const cz = chapter?.zones[i];
+      const [x, z] = lz.checkpoint;
+      const tb = shapeBox(lz.trigger);
+      this.zones.push({
+        name: cz?.name ?? `Area ${i + 1}`,
+        checkpoint: new THREE.Vector3(x, this.heightAt(x, z), z),
+        triggerZ: tb.z1,
+        trigger: lz.trigger,
+        area: lz.area,
+        level: cz?.level ?? 1,
+        waves: cz?.waves ?? [],
+        opensGate: lz.opensGate,
+        closesGate: lz.closesGate,
+      });
+    });
   }
 
   // -------------------------------------------------------------------------
   // Queries
   // -------------------------------------------------------------------------
 
-  heightAt(_x: number, z: number) {
-    if (z >= STAIRS.z0) return 0;
-    if (z <= STAIRS.z1) return STAIRS.h;
-    return ((STAIRS.z0 - z) / (STAIRS.z0 - STAIRS.z1)) * STAIRS.h;
+  heightAt(x: number, z: number) {
+    return this.terrain.heightAt(x, z);
   }
 
-  /** True if a circle of radius r centred at (x,z) is on walkable ground. */
+  /** Height of the rendered ground (under bridges this is the stream bed, not the deck). */
+  terrainHeight(x: number, z: number) {
+    return this.terrain.groundAt(x, z);
+  }
+
+  /** True if a circle of radius r centred at (x,z) is on walkable ground (cliffs, water and props block). */
   isWalkable(x: number, z: number, r = 0.4) {
-    let inside = false;
-    for (const q of WALK_RECTS) {
-      if (x >= q.x0 + r && x <= q.x1 - r && z >= q.z0 + r && z <= q.z1 - r) { inside = true; break; }
-    }
-    if (!inside) {
-      for (const c of WALK_CIRCLES) {
-        if (Math.hypot(x - c.x, z - c.z) <= c.r - r) { inside = true; break; }
+    const t = this.terrain;
+    if (!t.walkableAt(x, z)) return false;
+    if (r > 0) {
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        if (!t.walkableAt(x + Math.sin(a) * r, z + Math.cos(a) * r)) return false;
       }
     }
-    if (!inside) return false;
-    for (const o of this.obstacles) {
-      const dx = x - o.x, dz = z - o.z, rr = o.r + r;
-      if (dx * dx + dz * dz < rr * rr) return false;
+    const list = this.obstHash.get(this.hashKey(Math.floor(x / OBST_CELL), Math.floor(z / OBST_CELL)));
+    if (list) {
+      for (const o of list) {
+        const dx = x - o.x, dz = z - o.z, rr = o.r + r;
+        if (dx * dx + dz * dz < rr * rr) return false;
+      }
     }
     for (const b of this.breakables) {
       if (b.broken) continue;
       const dx = x - b.pos.x, dz = z - b.pos.z, rr = b.def.radius + r;
       if (dx * dx + dz * dz < rr * rr) return false;
     }
+    if (this.explore?.blocking(x, z, r)) return false;
     return true;
+  }
+
+  private hashKey(i: number, j: number) {
+    return (i + 4096) * 8192 + (j + 4096);
+  }
+
+  private hashObstacles() {
+    this.obstHash.clear();
+    for (const o of this.obstacles) {
+      const i0 = Math.floor((o.x - o.r - 1.6) / OBST_CELL), i1 = Math.floor((o.x + o.r + 1.6) / OBST_CELL);
+      const j0 = Math.floor((o.z - o.r - 1.6) / OBST_CELL), j1 = Math.floor((o.z + o.r + 1.6) / OBST_CELL);
+      for (let i = i0; i <= i1; i++) {
+        for (let j = j0; j <= j1; j++) {
+          const k = this.hashKey(i, j);
+          let l = this.obstHash.get(k);
+          if (!l) this.obstHash.set(k, (l = []));
+          l.push(o);
+        }
+      }
+    }
   }
 
   private crossesGate(z0: number, z1: number, x: number) {
@@ -192,7 +289,7 @@ export class Level {
     return false;
   }
 
-  /** Moves pos by (dx,dz) with wall sliding. Returns true if any movement happened. */
+  /** Moves pos by (dx,dz) with wall sliding and snaps it to the ground. Returns true if any movement happened. */
   move(pos: THREE.Vector3, dx: number, dz: number, r: number) {
     const nx = pos.x + dx, nz = pos.z + dz;
     const pad = Math.sign(dz) * r;
@@ -210,71 +307,77 @@ export class Level {
 
   /** Finds a random walkable point inside a rect. */
   randomPointIn(area: Rect, r = 0.6, avoid?: THREE.Vector3, minDist = 0) {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       const x = area.x0 + Math.random() * (area.x1 - area.x0);
       const z = area.z0 + Math.random() * (area.z1 - area.z0);
       if (avoid && Math.hypot(x - avoid.x, z - avoid.z) < minDist) continue;
       if (this.isWalkable(x, z, r)) return new THREE.Vector3(x, this.heightAt(x, z), z);
     }
+    for (let i = 0; i < 60; i++) {
+      const x = area.x0 + Math.random() * (area.x1 - area.x0);
+      const z = area.z0 + Math.random() * (area.z1 - area.z0);
+      if (this.isWalkable(x, z, 0.3)) return new THREE.Vector3(x, this.heightAt(x, z), z);
+    }
     const cx = (area.x0 + area.x1) / 2, cz = (area.z0 + area.z1) / 2;
     return new THREE.Vector3(cx, this.heightAt(cx, cz), cz);
   }
 
-  /** Signed-ish distance from a point to the flat (walkable + pad) ground. */
-  private flatDistance(x: number, z: number) {
-    let d = Infinity;
-    for (const q of [...WALK_RECTS, ...PADS]) {
-      const dx = Math.max(q.x0 - x, 0, x - q.x1);
-      const dz = Math.max(q.z0 - z, 0, z - q.z1);
-      d = Math.min(d, Math.hypot(dx, dz));
+  /** True once the player has stepped into zone i's trigger shape. */
+  zoneTriggered(i: number, p: THREE.Vector3) {
+    const z = this.zones[i];
+    return !!z && shapeDistance(z.trigger, p.x, p.z) <= 0;
+  }
+
+  /** Name of the place at a point (named regions first, then the nearest zone). */
+  locationAt(x: number, z: number) {
+    for (const r of this.regionList) if (shapeDistance(r.shape, x, z) <= 0) return r.name;
+    let best = this.zones[0]?.name ?? '', bd = Infinity;
+    for (const zn of this.zones) {
+      const d = Math.hypot(zn.checkpoint.x - x, zn.checkpoint.z - z);
+      if (d < bd) { bd = d; best = zn.name; }
     }
-    for (const c of WALK_CIRCLES) d = Math.min(d, Math.max(0, Math.hypot(x - c.x, z - c.z) - c.r));
-    return d;
+    return best;
   }
 
-  terrainHeight(x: number, z: number) {
-    const d = this.flatDistance(x, z);
-    const hill = clamp(d / 5, 0, 1);
-    return this.heightAt(x, clamp(z, -170, 20)) + hill * hill * (1.5 + noise2(x * 0.15, z * 0.15) * 4) - (d === 0 ? 0.02 : 0);
+  /** Index of the zone whose area holds this point, or -1. */
+  zoneIndexAt(x: number, z: number) {
+    return this.zones.findIndex((zn) => shapeDistance(zn.trigger, x, z) <= 0);
+  }
+
+  /** True while an optional guarded encounter is being fought. */
+  get exploreFighting() {
+    return this.explore?.fighting ?? false;
+  }
+
+  /** Steps chests, collectables, shortcuts, puzzles and encounters (call each frame while playing). */
+  updateExplore(dt: number, time: number, player: THREE.Vector3, fighting: boolean, zoneLevel: number) {
+    this.explore?.update(dt, time, player, fighting, zoneLevel);
+  }
+
+  /** Re-arms optional encounters (rest / death). */
+  resetExplore() {
+    this.explore?.reset();
   }
 
   // -------------------------------------------------------------------------
-  // Building
+  // Building: lights, mist
   // -------------------------------------------------------------------------
-
-  build(quality: 'low' | 'medium' | 'high') {
-    this.quality = quality;
-    const density = quality === 'low' ? 0.5 : quality === 'medium' ? 0.8 : 1;
-    this.buildLights();
-    this.buildTerrain();
-    this.buildFlagstones();
-    this.buildStairs();
-    this.buildArchitecture();
-    this.buildShrines();
-    this.buildFoliage(density);
-    this.buildBreakables();
-    this.buildGates();
-    this.bakeStatic();
-    this.buildMist();
-    this.scene.add(this.group);
-  }
 
   private buildLights() {
     const hemi = new THREE.HemisphereLight(0x9ab8bc, 0x34402a, 2.0);
     const moon = new THREE.DirectionalLight(0xd2dce6, 1.9);
     moon.position.set(-8, 16, 6);
     if (this.quality === 'high') {
-      // Real moonlight shadows on High: a tight shadow box that follows the player.
       moon.castShadow = true;
       moon.shadow.mapSize.set(1024, 1024);
       const c = moon.shadow.camera;
-      c.left = -18; c.right = 18; c.top = 18; c.bottom = -18; c.near = 1; c.far = 50;
+      c.left = -18; c.right = 18; c.top = 18; c.bottom = -18; c.near = 1; c.far = 60;
       moon.shadow.bias = -0.0008;
       moon.shadow.normalBias = 0.03;
     }
     this.moon = moon;
     this.hemi = hemi;
-    this.group.add(hemi, moon, moon.target);
+    this.lights.add(hemi, moon, moon.target);
   }
 
   /** Keeps the moon's shadow box centred on the player. */
@@ -284,7 +387,6 @@ export class Level {
     this.moon.target.position.set(p.x, p.y, p.z);
   }
 
-  /** Low drifting mist layers that follow the camera target. */
   private buildMist() {
     if (this.quality === 'low') return;
     const tex = mistTexture();
@@ -294,7 +396,6 @@ export class Level {
       const m = new THREE.Mesh(new THREE.PlaneGeometry(70, 70).rotateX(-Math.PI / 2), mat);
       m.position.y = y;
       m.renderOrder = 4;
-      m.userData.dynamic = true;
       this.mist.push(m);
       this.scene.add(m);
     }
@@ -303,130 +404,263 @@ export class Level {
   private addLightPool(x: number, y: number, z: number, r: number) {
     const blob = makeBlob(0xffa050, 0.5, r, true);
     blob.position.set(x, y + 0.04, z);
+    blob.userData.sharedGeo = true;
+    this.owned.push(blob.material as THREE.Material);
     this.group.add(blob);
   }
 
-  private buildTerrain() {
-    const { x0, x1, z0, z1 } = { x0: -48, x1: 48, z0: -175, z1: 26 };
-    const w = x1 - x0, d = z1 - z0;
-    const geo = new THREE.PlaneGeometry(w, d, 64, 150).rotateX(-Math.PI / 2);
-    geo.translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
-    const pos = geo.getAttribute('position');
-    const colors = new Float32Array(pos.count * 3);
-    const grass = new THREE.Color(0x3f5c2a), moss = new THREE.Color(0x32502a), dirt = new THREE.Color(0x5a4a34), dark = new THREE.Color(0x203420);
-    const c = new THREE.Color();
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), z = pos.getZ(i);
-      const y = this.terrainHeight(x, z);
-      pos.setY(i, y);
-      const n = noise2(x * 0.3, z * 0.3);
-      const fd = this.flatDistance(x, z);
-      if (fd === 0) {
-        // Dirt path through the clearing, mossy elsewhere.
-        const path = clamp(1 - Math.abs(x + Math.sin(z * 0.15) * 2) / 3.5, 0, 1);
-        c.copy(grass).lerp(dirt, clamp(path * 1.2 + n * 0.3 - 0.2, 0, 1)).multiplyScalar(0.9 + 0.2 * noise2(x * 1.3, z * 1.3));
-      } else {
-        c.copy(moss).lerp(dark, clamp(fd / 8 + n * 0.3, 0, 1));
+  // -------------------------------------------------------------------------
+  // Building: ground
+  // -------------------------------------------------------------------------
+
+  private floorColor(f: Floor | null, pal: LayoutDef['palette']) {
+    switch (f) {
+      case 'grass': return pal.grass;
+      case 'moss': return pal.moss;
+      case 'dirt': return pal.dirt;
+      case 'sand': return pal.sand ?? pal.dirt;
+      case 'snow': return pal.snow ?? 0xdde6ee;
+      case 'ice': return pal.ice ?? 0xa8c8e0;
+      case 'rock': case 'stone': case 'bone': return pal.rock;
+      case 'wood': return pal.dirt;
+      default: return pal.wild;
+    }
+  }
+
+  /** Terrain mesh from the coarse ground grid, in chunks so frustum culling can skip most of it. */
+  private buildTerrainMesh() {
+    const t = this.terrain, pal = this.layout.palette;
+    const CH = 48;
+    const cWild = new THREE.Color(pal.wild), cHigh = new THREE.Color(pal.high), cRock = new THREE.Color(pal.rock);
+    const c = new THREE.Color(), tmp = new THREE.Color();
+    // Per-node colour, computed once and shared by chunk borders.
+    const cols = new Float32Array(t.gnx * t.gnz * 3);
+    for (let j = 0; j < t.gnz; j++) {
+      for (let i = 0; i < t.gnx; i++) {
+        const k = j * t.gnx + i, x = t.gx0 + i, z = t.gz0 + j;
+        const d = t.dist[k], g = t.ground[k];
+        const slope = t.slopeAt(x, z);
+        const n = noise2(x * 0.3, z * 0.3), n2 = noise2(x * 1.1 + 4, z * 1.1);
+        if (d <= 0.01) {
+          c.setHex(this.floorColor(t.floorAt(x, z), pal));
+          // Worn centre lines on dirt and grass, patchy moss.
+          if (t.floorAt(x, z) === 'grass') c.lerp(tmp.setHex(pal.moss), clamp(n * 0.8 - 0.1, 0, 0.7));
+          c.multiplyScalar(0.88 + 0.24 * n2);
+        } else {
+          const above = g - this.heightAt(clamp(x, t.walkBox.x0, t.walkBox.x1), clamp(z, t.walkBox.z0, t.walkBox.z1));
+          c.copy(cWild).lerp(cHigh, clamp(above / 14 + n * 0.25 - 0.1, 0, 1));
+          c.lerp(cRock, smoothstep(0.7, 1.4, slope + n * 0.3));
+          c.multiplyScalar(0.85 + 0.3 * n2);
+        }
+        // Wet, darker banks near water.
+        const wl = t.waterLevel[k];
+        if (wl > -1e8 && g < wl + 0.6) c.multiplyScalar(0.7);
+        cols[k * 3] = c.r; cols[k * 3 + 1] = c.g; cols[k * 3 + 2] = c.b;
       }
-      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.computeVertexNormals();
-    const detail = groundDetailTexture(this.quality === 'low' ? 128 : 256);
-    this.worldUV(geo, 3);
-    this.terrainMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail.map, normalMap: detail.normalMap });
-    const terrain = new THREE.Mesh(geo, this.terrainMat);
-    terrain.receiveShadow = true;
-    this.group.add(terrain);
-
+    for (let cj = 0; cj < t.gnz - 1; cj += CH) {
+      for (let ci = 0; ci < t.gnx - 1; ci += CH) {
+        const w = Math.min(CH, t.gnx - 1 - ci), h = Math.min(CH, t.gnz - 1 - cj);
+        const pos = new Float32Array((w + 1) * (h + 1) * 3), col = new Float32Array((w + 1) * (h + 1) * 3), uv = new Float32Array((w + 1) * (h + 1) * 2);
+        for (let j = 0; j <= h; j++) {
+          for (let i = 0; i <= w; i++) {
+            const gi = ci + i, gj = cj + j, k = gj * t.gnx + gi, v = j * (w + 1) + i;
+            const x = t.gx0 + gi, z = t.gz0 + gj;
+            pos[v * 3] = x; pos[v * 3 + 1] = t.ground[k] - (t.dist[k] <= 0.01 ? 0.02 : 0); pos[v * 3 + 2] = z;
+            col[v * 3] = cols[k * 3]; col[v * 3 + 1] = cols[k * 3 + 1]; col[v * 3 + 2] = cols[k * 3 + 2];
+            uv[v * 2] = x / 3; uv[v * 2 + 1] = z / 3;
+          }
+        }
+        const idx: number[] = [];
+        for (let j = 0; j < h; j++) {
+          for (let i = 0; i < w; i++) {
+            const a = j * (w + 1) + i, b = a + 1, cc = a + w + 1, d = cc + 1;
+            idx.push(a, cc, b, b, cc, d);
+          }
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        geo.computeBoundingSphere();
+        const mesh = new THREE.Mesh(geo, this.terrainMat!);
+        mesh.receiveShadow = true;
+        mesh.userData.dynamic = true; // keep chunks separate (culling), don't bake
+        this.group.add(mesh);
+      }
+    }
   }
 
-  /** World-space planar UVs (1 UV unit = `size` metres) so textures tile at a fixed scale. */
-  private worldUV(geo: THREE.BufferGeometry, size: number) {
-    const pos = geo.getAttribute('position');
-    const uv = new Float32Array(pos.count * 2);
-    for (let i = 0; i < pos.count; i++) {
-      uv[i * 2] = pos.getX(i) / size;
-      uv[i * 2 + 1] = pos.getZ(i) / size;
-    }
-    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    return geo;
-  }
-
-  private buildFlagstones() {
-    // Paved areas are single textured planes (flagstones painted with relief), plus a
-    // scattering of raised / tilted broken slabs for depth.
-    const tex = flagstoneTexture(this.quality === 'low' ? 256 : 512);
-    const mat = new THREE.MeshLambertMaterial({ map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(1.2, 1.2) });
-    this.stoneMat = mat;
-    const add = (geo: THREE.BufferGeometry, y: number) => {
-      const m = new THREE.Mesh(this.worldUV(geo, 6), mat);
-      m.position.y = y;
+  /** Flagstone surfaces, stairs and bridges. */
+  private buildPaving() {
+    const L = this.layout;
+    const stone = this.stoneMat!;
+    const addSurface = (geo: THREE.BufferGeometry, lift: number) => {
+      const p = geo.getAttribute('position');
+      const uv = new Float32Array(p.count * 2);
+      for (let i = 0; i < p.count; i++) {
+        p.setY(i, this.heightAt(p.getX(i), p.getZ(i)) + lift);
+        uv[i * 2] = p.getX(i) / 6; uv[i * 2 + 1] = p.getZ(i) / 6;
+      }
+      geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, stone);
       m.receiveShadow = true;
       this.group.add(m);
     };
-    const plane = (x0: number, x1: number, z0: number, z1: number) =>
-      new THREE.PlaneGeometry(x1 - x0, z1 - z0).rotateX(-Math.PI / 2).translate((x0 + x1) / 2, 0, (z0 + z1) / 2);
-    add(plane(-15, 15, -81, -44), 0.03);
-    add(plane(-17, 17, -123, -100), STAIRS.h + 0.03);
-    add(new THREE.CircleGeometry(14.6, 40).rotateX(-Math.PI / 2).translate(0, 0, -139), STAIRS.h + 0.035);
-    add(plane(-6, 6, -127, -121), STAIRS.h + 0.032);
-
-    const tile = colored(new THREE.BoxGeometry(1.9, 0.16, 1.9), 0x4f4b45, 0);
-    const mats: THREE.Matrix4[] = [];
-    const colors: THREE.Color[] = [];
-    const place = (x: number, z: number) => {
-      if (this.rng() > 0.03) return;
-      const y = this.heightAt(x, z) + 0.05;
-      mats.push(new THREE.Matrix4().compose(
-        new THREE.Vector3(x + (this.rng() - 0.5) * 0.4, y, z + (this.rng() - 0.5) * 0.4),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler((this.rng() - 0.5) * 0.25, this.rng() * 3, (this.rng() - 0.5) * 0.25)),
-        new THREE.Vector3(0.6 + this.rng() * 0.5, 1, 0.6 + this.rng() * 0.5),
-      ));
-      const v = 0.75 + this.rng() * 0.25;
-      colors.push(new THREE.Color(v, v * 0.97, v * 0.92));
-    };
-    for (let x = -14; x <= 14; x += 2) for (let z = -80; z <= -45; z += 2) place(x, z);
-    for (let x = -16; x <= 16; x += 2) for (let z = -122; z <= -101; z += 2) place(x, z);
-    for (let x = -14; x <= 14; x += 2) for (let z = -153; z <= -123; z += 2) if (Math.hypot(x, z + 139) < 13 || Math.abs(x) < 5) place(x, z);
-    this.instanced(tile, vcMaterial, mats, colors);
-  }
-
-  private buildStairs() {
-    const steps = 20;
-    const depth = (STAIRS.z0 - STAIRS.z1) / steps;
-    const stepGeo = new THREE.BoxGeometry(12, 1, depth + 0.05);
-    // Stretch the stone texture along the step so each tread shows several slabs.
-    const uvs = stepGeo.getAttribute('uv');
-    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * 2, uvs.getY(i) * 0.25);
-    const mats: THREE.Matrix4[] = [];
-    for (let i = 0; i < steps; i++) {
-      const top = ((i + 1) / steps) * STAIRS.h;
-      const z = STAIRS.z0 - depth * (i + 0.5);
-      mats.push(new THREE.Matrix4().compose(new THREE.Vector3(0, top - 0.5, z), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)));
-    }
-    this.instanced(stepGeo, this.stoneMat!, mats);
-    // Side walls + balustrades
-    const len = Math.hypot(STAIRS.z0 - STAIRS.z1, STAIRS.h);
-    const ang = Math.atan2(STAIRS.h, STAIRS.z0 - STAIRS.z1);
-    for (const sx of [-6.4, 6.4]) {
-      const wall = new THREE.Mesh(colored(new THREE.BoxGeometry(0.8, 1.6, len), 0x57534d), vcMaterial);
-      wall.position.set(sx, STAIRS.h / 2 - 0.2, (STAIRS.z0 + STAIRS.z1) / 2);
-      wall.rotation.x = ang;
-      this.group.add(wall);
-      for (let k = 0; k < 2; k++) {
-        const z = k ? STAIRS.z1 - 0.5 : STAIRS.z0 + 0.5;
-        this.place(stoneLantern(), sx * 1.15, this.heightAt(0, z), z);
+    for (const a of L.terrain.areas) {
+      if (!a.pave) continue;
+      const s = a.shape;
+      if (s.kind === 'rect') {
+        const w = s.x1 - s.x0, d = s.z1 - s.z0;
+        addSurface(new THREE.PlaneGeometry(w, d, Math.ceil(w / 2), Math.ceil(d / 2)).rotateX(-Math.PI / 2).translate((s.x0 + s.x1) / 2, 0, (s.z0 + s.z1) / 2), 0.04);
+      } else if (s.kind === 'circle') {
+        addSurface(new THREE.CircleGeometry(s.r, 40, 0, Math.PI * 2).rotateX(-Math.PI / 2).translate(s.x, 0, s.z), 0.045);
+      } else {
+        const shape = new THREE.Shape(s.pts.map(([x, z]) => new THREE.Vector2(x, -z)));
+        addSurface(new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2), 0.045);
       }
     }
-    // Plaza front balustrades on either side of the stair head
-    for (const sx of [-1, 1]) {
-      const b = balustrade(9.5);
-      b.rotation.y = Math.PI / 2;
-      b.position.set(sx * 11.2, STAIRS.h, -100.3);
-      this.group.add(b);
+    for (const p of L.terrain.paths) {
+      if (p.stairs) this.buildStairs(p.pts, p.w);
+      else if (p.bridge) this.buildBridge(p.pts, p.w);
+      else if (p.pave) addSurface(this.stripGeometry(p.pts, p.w), 0.035);
     }
   }
+
+  /** A flat ribbon along a polyline (paved path). */
+  private stripGeometry(pts: [number, number, number][], w: number) {
+    const pos: number[] = [], idx: number[] = [];
+    const dense: [number, number][] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
+      const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 1.5));
+      for (let k = 0; k < n; k++) dense.push([ax + ((bx - ax) * k) / n, az + ((bz - az) * k) / n]);
+    }
+    dense.push([pts[pts.length - 1][0], pts[pts.length - 1][1]]);
+    dense.forEach(([x, z], i) => {
+      const [px, pz] = dense[Math.max(0, i - 1)], [nx, nz] = dense[Math.min(dense.length - 1, i + 1)];
+      let tx = nx - px, tz = nz - pz;
+      const l = Math.hypot(tx, tz) || 1;
+      tx /= l; tz /= l;
+      pos.push(x - tz * w / 2, 0, z + tx * w / 2, x + tz * w / 2, 0, z - tx * w / 2);
+      if (i > 0) {
+        const a = (i - 1) * 2;
+        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      }
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    return geo;
+  }
+
+  private buildStairs(pts: [number, number, number][], w: number) {
+    const mats: THREE.Matrix4[] = [];
+    const side: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az, ah] = pts[i], [bx, bz, bh] = pts[i + 1];
+      const len = Math.hypot(bx - ax, bz - az);
+      const yaw = Math.atan2(bx - ax, bz - az);
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0));
+      const dh = bh - ah;
+      if (Math.abs(dh) < 0.15) continue;
+      const steps = Math.max(2, Math.round(Math.abs(dh) / 0.28));
+      const depth = len / steps;
+      for (let s = 0; s < steps; s++) {
+        const t = (s + 0.5) / steps;
+        const y = ah + dh * t - 0.5 + 0.08;
+        mats.push(new THREE.Matrix4().compose(new THREE.Vector3(ax + (bx - ax) * t, y, az + (bz - az) * t), q, new THREE.Vector3(w, 1, depth + 0.04)));
+      }
+      // Low walls along both sides.
+      for (const sd of [-1, 1]) {
+        const ox = Math.cos(yaw) * sd * (w / 2 + 0.3), oz = -Math.sin(yaw) * sd * (w / 2 + 0.3);
+        const wall = colored(new THREE.BoxGeometry(0.6, 1.4, len + 0.4), 0x57534d);
+        wall.rotateX(Math.atan2(dh, len));
+        wall.rotateY(yaw);
+        wall.translate((ax + bx) / 2 + ox, (ah + bh) / 2 + 0.05, (az + bz) / 2 + oz);
+        side.push(wall);
+      }
+    }
+    const stepGeo = new THREE.BoxGeometry(1, 1, 1);
+    const uvs = stepGeo.getAttribute('uv');
+    for (let i = 0; i < uvs.count; i++) uvs.setXY(i, uvs.getX(i) * 2, uvs.getY(i) * 0.25);
+    this.owned.push(stepGeo);
+    if (mats.length) this.instanced(stepGeo, this.stoneMat!, mats, undefined, false, 24, false);
+    if (side.length) this.group.add(new THREE.Mesh(mergeGeometries(side, false)!, vcMaterial));
+  }
+
+  private buildBridge(pts: [number, number, number][], w: number) {
+    const parts: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, az, ah] = pts[i], [bx, bz, bh] = pts[i + 1];
+      const len = Math.hypot(bx - ax, bz - az);
+      const yaw = Math.atan2(bx - ax, bz - az);
+      const n = Math.max(1, Math.round(len / 0.55));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const x = ax + (bx - ax) * t, z = az + (bz - az) * t, y = ah + (bh - ah) * t;
+        parts.push(colored(new THREE.BoxGeometry(w + 0.4, 0.16, len / n - 0.06).rotateY(yaw).translate(x, y - 0.06, z), k % 2 ? 0x5a3e28 : 0x4e3622, 0.12));
+      }
+      for (const sd of [-1, 1]) {
+        const ox = Math.cos(yaw) * sd * (w / 2 + 0.15), oz = -Math.sin(yaw) * sd * (w / 2 + 0.15);
+        const m = Math.max(1, Math.round(len / 1.6));
+        for (let k = 0; k <= m; k++) {
+          const t = k / m;
+          const x = ax + (bx - ax) * t + ox, z = az + (bz - az) * t + oz, y = ah + (bh - ah) * t;
+          const g = this.terrainHeight(x, z);
+          parts.push(colored(new THREE.BoxGeometry(0.16, 1.1, 0.16).translate(x, y + 0.45, z), 0x3a2618));
+          if (y - g > 0.3) parts.push(colored(new THREE.BoxGeometry(0.22, y - g + 0.6, 0.22).translate(x, (y + g) / 2 - 0.3, z), 0x2e2016));
+          this.obstacles.push({ x, z, r: 0.2 });
+        }
+        const rail = new THREE.BoxGeometry(0.1, 0.1, Math.hypot(len, bh - ah));
+        rail.rotateX(-Math.atan2(bh - ah, len)).rotateY(yaw).translate((ax + bx) / 2 + ox, (ah + bh) / 2 + 0.95, (az + bz) / 2 + oz);
+        parts.push(colored(rail, 0x6a2a1a));
+      }
+    }
+    this.group.add(new THREE.Mesh(mergeGeometries(parts, false)!, vcMaterial));
+  }
+
+  private buildWater() {
+    const L = this.layout;
+    const lines = L.terrain.water.filter((w) => w.line);
+    const flowAt = (x: number, z: number): [number, number] => {
+      let best = Infinity, fx = 0, fz = 0;
+      for (const w of lines) {
+        const p = w.line!;
+        for (let i = 0; i < p.length - 1; i++) {
+          const [ax, az] = p[i], [bx, bz] = p[i + 1];
+          const ex = bx - ax, ez = bz - az, l2 = ex * ex + ez * ez || 1;
+          const t = clamp(((x - ax) * ex + (z - az) * ez) / l2, 0, 1);
+          const d = Math.hypot(x - ax - ex * t, z - az - ez * t);
+          if (d < best && d < w.w! / 2 + 2) { best = d; const l = Math.sqrt(l2); fx = ex / l; fz = ez / l; }
+        }
+      }
+      return [fx * 0.8, fz * 0.8];
+    };
+    const water = buildWater(this.terrain, L.water, flowAt);
+    if (water) {
+      water.userData.dynamic = true;
+      this.owned.push(water.material as THREE.Material);
+      this.group.add(water);
+    }
+    for (const w of L.terrain.water) {
+      if (!w.frozen || !w.shape) continue;
+      const shape = w.shape;
+      const ice = buildIce(this.terrain, (x, z) => shapeDistance(shape, x, z) < 0.2, w.level ?? 0, L.water);
+      if (ice) {
+        ice.userData.dynamic = true;
+        this.owned.push(ice.material as THREE.Material);
+        this.group.add(ice);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Building: props, shrines, gates, breakables
+  // -------------------------------------------------------------------------
 
   private place(p: PropResult, x: number, y: number, z: number, rotY = 0) {
     p.group.position.set(x, y, z);
@@ -437,160 +671,69 @@ export class Level {
     for (const l of p.lights) this.addLightPool(x + l.x * cos + l.z * sin, y, z - l.x * sin + l.z * cos, l.r);
   }
 
-  private buildArchitecture() {
-    // Forest clearing: pavilion on the left, guardian statues, rocks.
-    this.place(pavilion(8, 6, 1), -15, 0, -5, 0.15);
-    this.place(guardianStatue(), -7.5, 0, -2, 0.4);
-    this.place(guardianStatue(), 7.5, 0, -30, -0.4);
-    this.place(guardianStatue(), -7.5, 0, -30, 0.4);
-    const bigRock = (x: number, z: number, s: number, seed: number) => {
-      const m = new THREE.Mesh(rockGeometry(seed, 0x5a5750), vcMaterial);
-      m.scale.set(s, s * 0.9, s);
-      m.position.set(x, this.heightAt(x, z), z);
-      m.rotation.y = seed;
-      this.group.add(m);
-      this.obstacles.push({ x, z, r: s * 0.85 });
-    };
-    bigRock(8.5, -14, 1.8, 11);
-    bigRock(9.5, -18, 1.2, 12);
-    bigRock(-9, -22, 1.5, 13);
-    bigRock(4, -6, 0.9, 14);
+  private natureBuckets = new Map<string, THREE.Matrix4[]>();
 
-    // Courtyard: stone lanterns, broken pillars, side pavilion.
-    for (const [x, z] of [[-10, -50], [10, -50], [-10, -74], [10, -74]]) this.place(stoneLantern(), x, 0, z);
-    for (const [x, z, h] of [[-12, -60, 1.6], [-12, -66, 2.6], [12, -56, 0.9]]) this.place(brokenPillar(h), x, 0, z);
-    this.place(pavilion(6, 6, 2), 19, 0, -60, -Math.PI / 2);
-    this.place(guardianStatue(), -4, 0, -79, 0);
-    this.place(guardianStatue(), 4, 0, -79, 0);
+  private addNature(name: string, x: number, y: number, z: number, s: number, rot = this.rng() * 6.28) {
+    let l = this.natureBuckets.get(name);
+    if (!l) this.natureBuckets.set(name, (l = []));
+    l.push(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rot, 0)), new THREE.Vector3(s, s, s)));
+  }
 
-    // Upper plaza: twin pavilions, lanterns.
-    this.place(pavilion(6, 6, 1), -21, STAIRS.h, -112, Math.PI / 2);
-    this.place(pavilion(6, 6, 1), 21, STAIRS.h, -112, -Math.PI / 2);
-    for (const [x, z] of [[-13, -104], [13, -104], [-13, -119], [13, -119]]) this.place(stoneLantern(), x, STAIRS.h, z);
-    // Arena ring of lanterns and the temple hall
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
-      const x = Math.sin(a) * 13.2, z = -139 + Math.cos(a) * 13.2;
-      if (z > -128) continue;
-      this.place(stoneLantern(), x, STAIRS.h, z);
+  private placeProp(p: PropPlace) {
+    const [x, z] = p.at;
+    const y = p.y ?? this.heightAt(x, z);
+    const rot = p.rot ?? 0, s = p.s ?? 1;
+    const sand = this.layout.palette.sand ?? 0xb07a48;
+    switch (p.kind) {
+      case 'pavilion': return this.place(pavilion(8, 6, 1), x, y, z, rot);
+      case 'pavilionSmall': return this.place(pavilion(6, 6, s > 1 ? 2 : 1), x, y, z, rot);
+      case 'hall': return this.place(templeHall(), x, y, z, rot);
+      case 'statue': return this.place(guardianStatue(), x, y, z, rot);
+      case 'lantern': return this.place(stoneLantern(), x, y, z, rot);
+      case 'pillar': return this.place(brokenPillar(s), x, y, z, rot);
+      case 'balustrade': {
+        const b = balustrade(s);
+        b.position.set(x, y, z);
+        b.rotation.y = rot;
+        this.group.add(b);
+        const n = Math.ceil(s / 0.8);
+        for (let i = 0; i <= n; i++) {
+          const t = -s / 2 + (s * i) / n;
+          this.obstacles.push({ x: x + Math.sin(rot) * t, z: z + Math.cos(rot) * t, r: 0.3 });
+        }
+        return;
+      }
+      case 'paifang': return this.place(paifang(s), x, y, z, rot);
+      case 'rockArch': return this.place(rockArch(s, sand, Math.round(x + z)), x, y, z, rot);
+      case 'hoodoo': return this.place(hoodoo(s, sand, Math.round(x * 3 + z)), x, y, z, rot);
+      case 'boulder': return this.place(boulder(s, this.layout.palette.rock, Math.round(x * 7 + z)), x, y - s * 0.15, z, rot);
+      case 'ribArch': return this.place(ribArch(s), x, y, z, rot);
+      case 'skull': return this.place(bigSkull(s), x, y, z, rot);
+      case 'bonePile': return this.place(bonePile(Math.round(x * 5 + z)), x, y, z, rot);
+      case 'iceSpire': return this.place(iceSpire(s, Math.round(x * 3 - z)), x, y, z, rot);
+      case 'banner': return this.place(banner(), x, y, z, rot);
+      case 'stele': return this.place(stele(), x, y, z, rot);
+      case 'tent': return this.place(tent(), x, y, z, rot);
+      case 'overhang': return this.place(overhang(s, p.d ?? 8, this.layout.palette.rock), x, y, z, rot);
+      case 'brazierStand': return this.place(brazierStand(), x, y, z, rot);
+      case 'kayPillar': this.addNature('Pillar', x, y, z, s, rot); this.obstacles.push({ x, z, r: 0.5 * s }); return;
+      case 'rubble': this.addNature('Rubble', x, y, z, s, rot); this.obstacles.push({ x, z, r: 0.9 * s }); return;
+      case 'nature':
+        this.addNature(p.name!, x, y - 0.1, z, s, rot);
+        if (p.r) this.obstacles.push({ x, z, r: p.r });
+        return;
     }
-    this.place(templeHall(), 0, STAIRS.h, -162);
   }
 
   private buildShrines() {
-    for (const z of this.zones) {
-      const x = z.checkpoint.x + 3.2, zz = z.checkpoint.z - 1.5;
-      const s = buildShrine(x, this.heightAt(x, zz), zz, Math.atan2(z.checkpoint.x - x, z.checkpoint.z - zz));
+    this.layout.zones.forEach((lz, i) => {
+      const cp = this.zones[i].checkpoint;
+      const [x, zz] = lz.shrine ?? [cp.x + 3.2, cp.z - 1.5];
+      const s = buildShrine(x, this.heightAt(x, zz), zz, Math.atan2(cp.x - x, cp.z - zz));
       this.obstacles.push({ x, z: zz, r: 1.3 });
       this.shrines.push(s);
       this.group.add(s.group);
-    }
-  }
-
-  private mat4(x: number, y: number, z: number, s: number, rotY: number, sy = s) {
-    return new THREE.Matrix4().compose(
-      new THREE.Vector3(x, y, z),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0)),
-      new THREE.Vector3(s, sy, s),
-    );
-  }
-
-  /** Builds instanced meshes bucketed into chunks along Z so frustum culling still works. */
-  private instanced(geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[], colors?: THREE.Color[], castShadow = false, chunk = 24) {
-    const buckets = new Map<number, number[]>();
-    const p = new THREE.Vector3();
-    list.forEach((m, i) => {
-      p.setFromMatrixPosition(m);
-      const k = Math.floor(p.z / chunk) * 100 + Math.floor(p.x / chunk);
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k)!.push(i);
     });
-    for (const idx of buckets.values()) {
-      const im = new THREE.InstancedMesh(geo, mat, idx.length);
-      idx.forEach((src, j) => {
-        im.setMatrixAt(j, list[src]);
-        if (colors) im.setColorAt(j, colors[src]);
-      });
-      im.instanceMatrix.needsUpdate = true;
-      im.computeBoundingSphere();
-      im.castShadow = castShadow;
-      this.group.add(im);
-    }
-  }
-
-  /**
-   * Lush scatter from the nature kit. Tall props dissolve when they come between the camera and the
-   * player (see nature.ts), so the forest can crowd right up to the paths.
-   */
-  private buildFoliage(density: number) {
-    // Leaf cards are alpha-cut and overlap heavily, so foliage is mostly a fill-rate cost: phones (Medium/Low)
-    // get fewer trees, kept further back, and a thinner carpet of plants.
-    const treeD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.42 : 0.25;
-    const coverD = this.quality === 'high' ? 1 : this.quality === 'medium' ? 0.6 : 0.35;
-    const treeGap = this.quality === 'high' ? 2.6 : 3.6;
-    const buckets = new Map<string, THREE.Matrix4[]>();
-    const add = (name: string, x: number, y: number, z: number, s: number, rot = this.rng() * 6.28) => {
-      if (!buckets.has(name)) buckets.set(name, []);
-      buckets.get(name)!.push(this.mat4(x, y, z, s, rot));
-    };
-    const far: THREE.Matrix4[] = [];
-    const pick = <T,>(a: T[]) => a[Math.floor(this.rng() * a.length)];
-    // A small palette keeps draw calls down: every kind costs a call per chunk it appears in.
-    const forestTrees = ['CommonTree_3', 'CommonTree_3', 'Pine_1', 'Pine_1', 'CommonTree_5', 'Pine_1', 'TwistedTree_1'];
-    const templeTrees = ['Pine_1', 'TwistedTree_1', 'CommonTree_3', 'Pine_1', 'DeadTree_2', 'CommonTree_5'];
-    const tree = (forest: boolean, x: number, z: number, y: number) => {
-      const kind = pick(forest ? forestTrees : templeTrees);
-      const twisted = kind.startsWith('Twisted');
-      add(kind, x, y - 0.15, z, (twisted ? 0.42 : 0.85) + this.rng() * (twisted ? 0.18 : 0.45));
-    };
-    const keepClear = (x: number, z: number) =>
-      Math.abs(x) < 3.2 || this.zones.some((zn) => Math.hypot(zn.checkpoint.x - x, zn.checkpoint.z - z) < 5);
-    for (let z = 26; z > -176; z -= 1.5) {
-      for (let x = -48; x < 48; x += 1.5) {
-        const jx = x + (this.rng() - 0.5) * 1.4, jz = z + (this.rng() - 0.5) * 1.4;
-        const fd = this.flatDistance(jx, jz);
-        const y = this.terrainHeight(jx, jz);
-        const r = this.rng();
-        const forest = jz > -44;
-        if (fd > 14) {
-          if (r < 0.1 * density) far.push(this.mat4(jx, y - 0.2, jz, 1.4 + this.rng() * 1.2, this.rng() * 6));
-          continue;
-        }
-        if (fd > treeGap && r < 0.1 * treeD) {
-          tree(forest, jx, jz, y);
-          if (this.rng() < 0.35) add(pick(['Mushroom_Common', 'Fern_1', 'Rock_Medium_1']), jx + 1, this.terrainHeight(jx + 1, jz + 0.6), jz + 0.6, 0.5 + this.rng() * 0.4);
-        } else if (fd > 1.2 && fd < 10 && r < 0.32 * coverD) {
-          add(pick(['Bush_Common', 'Bush_Large', 'Bush_Common', 'Fern_1', 'Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.05, jz, 0.6 + this.rng() * 0.6);
-        } else if (fd > 0.25 && fd < 7 && r < 0.8 * coverD) {
-          add(pick(['Fern_1', 'Fern_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Clover_1', 'Grass_Common_Short']), jx, y, jz, 0.55 + this.rng() * 0.5);
-        } else if (fd <= 0.25 && forest) {
-          // Inside the clearing: a few solid features to fight around, and a carpet of low growth.
-          if (r < 0.03 && this.isWalkable(jx, jz, 2) && !keepClear(jx, jz)) {
-            const s = 0.55 + this.rng() * 0.35;
-            const kind = this.rng();
-            if (kind < 0.3) { tree(true, jx, jz, y); this.obstacles.push({ x: jx, z: jz, r: 0.7 }); }
-            else if (kind < 0.65) { add(pick(['Rock_Medium_1', 'Rock_Medium_3']), jx, y - 0.2, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.25 * s }); }
-            else { add('Bush_Large', jx, y - 0.1, jz, s); this.obstacles.push({ x: jx, z: jz, r: 1.3 * s }); }
-          } else if (r < 0.5 * coverD && this.isWalkable(jx, jz, 0)) {
-            add(pick(['Grass_Common_Short', 'Grass_Common_Short', 'Clover_1', 'Grass_Wispy_Tall', 'Flower_3_Group', 'Pebble_Round_1']), jx, y, jz, 0.4 + this.rng() * 0.35);
-          }
-        } else if (fd <= 0.25 && r < 0.04 * density) {
-          // Weeds and pebbles between flagstones.
-          add(pick(['Grass_Common_Short', 'Pebble_Round_1', 'Clover_1']), jx, this.heightAt(jx, jz) + 0.02, jz, 0.35 + this.rng() * 0.3);
-        }
-      }
-    }
-    const shadows = this.quality === 'high';
-    for (const [name, list] of buckets) {
-      const tall = /Tree|Pine/.test(name);
-      const big = tall || /Bush_Large|Rock_Medium/.test(name);
-      for (const part of propParts(name, tall ? 0.012 : 0.05, big)) {
-        // Trees are expensive per instance, so cull them finely; ground cover goes in big chunks.
-        this.instanced(part.geometry, part.material, list.map((m) => m.clone().multiply(part.matrix)), undefined, shadows && tall, tall ? 20 : 36);
-      }
-    }
-    // Distant silhouettes past the playable band: cheap low-poly pines lost in the fog.
-    this.instanced(pineGeometry(), vcMaterial, far);
   }
 
   private addBreakable(kind: BreakableKind, x: number, z: number) {
@@ -603,38 +746,145 @@ export class Level {
     this.breakables.push({ def, pos: new THREE.Vector3(x, y, z), hp: def.hp, broken: false });
   }
 
-  private buildBreakables() {
-    const list: [BreakableKind, number, number][] = [
-      ['barrel', 5, -10], ['barrel', 6, -11.2], ['crate', 5.2, -12], ['urn', -5, -16], ['rock', -3, -25], ['rock', 3, -33],
-      ['barrel', -8, -9], ['crate', -9.2, -10],
-      ['urn', -11, -52], ['urn', -11.5, -53.2], ['barrel', 11, -63], ['barrel', 11.5, -64.3], ['crate', 10.2, -64], ['bell', 6, -62],
-      ['rock', -6, -70], ['urn', 0, -56], ['crate', -6, -76], ['barrel', -7, -76.5],
-      ['urn', -3, -92], ['urn', 3, -95],
-      ['barrel', -14, -108], ['barrel', -13.5, -109.3], ['crate', 14, -115], ['urn', 13.5, -116.3], ['bell', -8, -116], ['rock', 6, -107],
-      ['urn', -9, -132], ['urn', 9, -132], ['crate', -10, -146], ['barrel', 10, -146],
-    ];
-    for (const [k, x, z] of list) this.addBreakable(k, x, z);
-  }
-
   private buildGates() {
-    const defs = [
-      { z: -36.2, x0: -5, x1: 5 },
-      { z: -80.4, x0: -6, x1: 6 },
-      { z: -121.5, x0: -6, x1: 6 },
-    ];
-    for (const d of defs) {
+    for (const d of this.layout.gates) {
       const { mesh, mat } = sealBarrier(d.x1 - d.x0);
-      mesh.position.set((d.x0 + d.x1) / 2, this.heightAt(0, d.z), d.z);
+      const cx = (d.x0 + d.x1) / 2;
+      mesh.position.set(cx, this.heightAt(cx, d.z), d.z);
       mesh.userData.dynamic = true;
+      this.owned.push(mat);
       this.group.add(mesh);
       this.gates.push({ ...d, active: true, mesh, mat, fade: 1 });
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Foliage
+  // -------------------------------------------------------------------------
+
   /**
-   * Merges every static, non-instanced mesh (pillars, roofs, statues, lanterns…)
-   * that shares a material into one mesh per 30 m chunk. Turns ~100 small draw
-   * calls into a handful while keeping frustum culling per chunk.
+   * Scatters the chapter's biome over the whole terrain: ground cover on grassy walkable floors, dense
+   * undergrowth along the walkable edges (it also hides where the walkable ground ends), forest in a band
+   * beyond, rocks on steep slopes and cheap silhouettes on the far ridges. Density scales with quality.
+   */
+  private buildFoliage() {
+    const t = this.terrain, B = this.layout.foliage, q = this.quality;
+    const treeD = q === 'high' ? 1 : q === 'medium' ? 0.5 : 0.3;
+    const coverD = q === 'high' ? 1 : q === 'medium' ? 0.55 : 0.3;
+    const step = q === 'low' ? 1.8 : 1.5;
+    const far: THREE.Matrix4[] = [];
+    const pickW = (list: [string, number][]) => {
+      let sum = 0;
+      for (const [, w] of list) sum += w;
+      let r = this.rng() * sum;
+      for (const [n, w] of list) if ((r -= w) <= 0) return n;
+      return list[0][0];
+    };
+    const zoneClear = (x: number, z: number) =>
+      this.zones.some((zn) => Math.hypot(zn.checkpoint.x - x, zn.checkpoint.z - z) < 3.5) ||
+      this.layout.chests.some((c) => Math.hypot(c.at[0] - x, c.at[1] - z) < 1.6);
+    const softFloors = new Set<Floor | null>(['grass', 'moss', 'dirt', 'sand', 'snow']);
+    for (let z = t.gz0 + 1; z < t.gz0 + t.gnz - 1; z += step) {
+      for (let x = t.gx0 + 1; x < t.gx0 + t.gnx - 1; x += step) {
+        const jx = x + (this.rng() - 0.5) * step * 0.9, jz = z + (this.rng() - 0.5) * step * 0.9;
+        const r = this.rng();
+        const g = t.groundAt(jx, jz);
+        const wl = t.waterAt(jx, jz);
+        if (wl > -1e8 && g < wl + 0.15) continue;
+        const d = t.distAt(jx, jz);
+        if (d <= 0) {
+          const k = t.fineIndex(jx, jz);
+          if (k < 0 || t.deck[k]) continue;
+          const f = t.floorAt(jx, jz);
+          if (softFloors.has(f)) {
+            if (r < B.coverDensity * coverD && !zoneClear(jx, jz)) this.addNature(pickW(B.cover), jx, this.heightAt(jx, jz) - 0.02, jz, 0.45 + this.rng() * 0.4);
+          } else if (r < 0.04 * coverD && B.cover.length) {
+            this.addNature(pickW(B.cover), jx, this.heightAt(jx, jz), jz, 0.3 + this.rng() * 0.25);
+          }
+          continue;
+        }
+        const slope = t.slopeAt(jx, jz);
+        if (d < 1.8) {
+          if (r < B.underDensity * coverD) this.addNature(pickW(B.under), jx, g - 0.08, jz, 0.6 + this.rng() * 0.6);
+          else if (r < (B.underDensity + B.coverDensity * 0.5) * coverD && B.cover.length) this.addNature(pickW(B.cover), jx, g - 0.02, jz, 0.5 + this.rng() * 0.45);
+          continue;
+        }
+        if (slope > 1.15) {
+          if (r < 0.12 * treeD + 0.04 && B.slopeRocks.length) this.addNature(pickW(B.slopeRocks), jx, g - 0.4, jz, 0.7 + this.rng() * 1.1);
+          continue;
+        }
+        if (d >= B.treeBand[0] && d <= B.treeBand[1]) {
+          if (r < B.treeDensity * treeD && B.trees.length) {
+            const [s0, s1] = B.treeScale;
+            this.addNature(pickW(B.trees), jx, g - 0.15, jz, s0 + this.rng() * (s1 - s0));
+          } else if (r < (B.treeDensity * treeD + B.underDensity * 0.45 * coverD)) {
+            this.addNature(pickW(B.under), jx, g - 0.08, jz, 0.6 + this.rng() * 0.7);
+          }
+          continue;
+        }
+        if (d > B.treeBand[1] && B.far !== 'none' && r < 0.07 * (q === 'low' ? 0.6 : 1)) {
+          far.push(new THREE.Matrix4().compose(new THREE.Vector3(jx, g - 0.2, jz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, this.rng() * 6, 0)), new THREE.Vector3().setScalar(1.4 + this.rng() * 1.2)));
+        }
+      }
+    }
+    // Rocks along cliff edges inside the walkable regions.
+    for (let j = 1; j < t.gnz - 1; j++) {
+      for (let i = 1; i < t.gnx - 1; i++) {
+        const k = j * t.gnx + i;
+        if (t.dist[k] > 0.01) continue;
+        const x = t.gx0 + i, z = t.gz0 + j;
+        if (t.slopeAt(x, z) < 1.4 || this.rng() > 0.35 || !B.slopeRocks.length) continue;
+        const s = 0.35 + this.rng() * 0.3;
+        this.addNature(pickW(B.slopeRocks), x, t.groundAt(x, z) - 0.35, z, s);
+      }
+    }
+    const shadows = q === 'high';
+    for (const [name, list] of this.natureBuckets) {
+      const tall = /Tree|Pine|Birch/.test(name);
+      const big = tall || /Bush_Large|Rock_|Pillar|Rubble|Chest/.test(name);
+      for (const part of propParts(name, tall ? 0.012 : 0.05, big && !/Rock_|Pillar|Rubble/.test(name))) {
+        this.instanced(part.geometry, part.material, list.map((m) => m.clone().multiply(part.matrix)), undefined, shadows && tall, tall ? 20 : 36, true);
+      }
+    }
+    this.natureBuckets.clear();
+    if (far.length) {
+      const g = pineGeometry();
+      if (B.far === 'snowpine') {
+        const c = g.getAttribute('color'), p = g.getAttribute('position');
+        for (let i = 0; i < c.count; i++) if (p.getY(i) > 1.6 && (i % 9) < 5) c.setXYZ(i, 0.78, 0.84, 0.9);
+      }
+      this.owned.push(g);
+      this.instanced(g, vcMaterial, far, undefined, false, 24, true);
+    }
+  }
+
+  /** Builds instanced meshes bucketed into chunks so frustum culling still works. */
+  private instanced(geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[], colors?: THREE.Color[], castShadow = false, chunk = 24, shared = false) {
+    const buckets = new Map<number, number[]>();
+    const p = new THREE.Vector3();
+    list.forEach((m, i) => {
+      p.setFromMatrixPosition(m);
+      const k = Math.floor(p.z / chunk) * 1000 + Math.floor(p.x / chunk);
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k)!.push(i);
+    });
+    for (const idx of buckets.values()) {
+      const im = new THREE.InstancedMesh(geo, mat, idx.length);
+      idx.forEach((src, j) => {
+        im.setMatrixAt(j, list[src]);
+        if (colors) im.setColorAt(j, colors[src]);
+      });
+      im.instanceMatrix.needsUpdate = true;
+      im.computeBoundingSphere();
+      im.castShadow = castShadow;
+      im.userData.sharedGeo = true;
+      if (!shared) this.owned.push(geo);
+      this.group.add(im);
+    }
+  }
+
+  /**
+   * Merges every static, non-instanced mesh that shares a material into one mesh per 30 m chunk.
    */
   private bakeStatic() {
     this.group.updateMatrixWorld(true);
@@ -651,7 +901,7 @@ export class Level {
       const mat = m.material as THREE.Material;
       if (Array.isArray(mat) || (mat as THREE.ShaderMaterial).isShaderMaterial || mat.transparent) return;
       m.getWorldPosition(p);
-      const key = mat.uuid + ':' + Math.floor(p.z / 30);
+      const key = mat.uuid + ':' + Math.floor(p.z / 30) + ':' + Math.floor(p.x / 30);
       let b = buckets.get(key);
       if (!b) buckets.set(key, (b = { mat, geos: [], order: m.renderOrder }));
       const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
@@ -659,9 +909,11 @@ export class Level {
       b.geos.push(g.applyMatrix4(m.matrixWorld));
       remove.push(m);
     });
-    for (const m of remove) m.parent?.remove(m);
+    for (const m of remove) {
+      m.parent?.remove(m);
+      (m as THREE.Mesh).geometry.dispose();
+    }
     for (const b of buckets.values()) {
-      // Geometries in one bucket must share attribute sets; group by signature.
       const bySig = new Map<string, THREE.BufferGeometry[]>();
       for (const g of b.geos) {
         const sig = Object.keys(g.attributes).sort().join(',');
@@ -670,10 +922,12 @@ export class Level {
       }
       for (const list of bySig.values()) {
         const merged = mergeGeometries(list, false);
+        for (const g of list) g.dispose();
         if (!merged) continue;
         merged.computeBoundingSphere();
         const mesh = new THREE.Mesh(merged, b.mat);
         mesh.renderOrder = b.order;
+        mesh.receiveShadow = true;
         this.group.add(mesh);
       }
     }
@@ -688,10 +942,11 @@ export class Level {
 
   update(dt: number, time: number, focus?: THREE.Vector3) {
     windUniform.value = time;
+    waterTime.value = time;
     for (const s of this.shrines) s.update(time);
     if (focus) focusUniform.value.copy(focus);
     for (const [i, m] of this.mist.entries()) {
-      if (focus) m.position.set(focus.x - 4, this.heightAt(0, focus.z) + (i ? 1.8 : 0.6), focus.z - 4);
+      if (focus) m.position.set(focus.x - 4, focus.y + (i ? 1.8 : 0.6), focus.z - 4);
       const map = (m.material as THREE.MeshBasicMaterial).map!;
       map.offset.set((time * (0.004 + i * 0.003) + m.position.x / 140) % 1, (time * 0.002 - m.position.z / 140) % 1);
     }
@@ -703,7 +958,7 @@ export class Level {
     }
   }
 
-  /** Renders the walkable layout to a canvas for the minimap (1px = 0.5m). */
+  /** Renders the walkable layout to a canvas for the minimap (1px = 0.5m), shaded by height, water in blue. */
   renderMinimap(): HTMLCanvasElement {
     const scale = 2;
     const { x0, x1, z0, z1 } = this.bounds;
@@ -711,18 +966,28 @@ export class Level {
     c.width = (x1 - x0) * scale;
     c.height = (z1 - z0) * scale;
     const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#1b1c1a';
-    ctx.fillRect(0, 0, c.width, c.height);
-    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const img = ctx.createImageData(c.width, c.height);
     const saved = this.breakables.map((b) => b.broken);
     this.breakables.forEach((b) => (b.broken = true));
+    const t = this.terrain;
+    let hmin = Infinity, hmax = -Infinity;
+    for (const z of this.zones) { hmin = Math.min(hmin, z.checkpoint.y); hmax = Math.max(hmax, z.checkpoint.y); }
+    hmax = Math.max(hmax, this.bossSpot.y, hmin + 1);
     for (let py = 0; py < c.height; py++) {
       for (let px = 0; px < c.width; px++) {
         const x = x0 + px / scale, z = z1 - py / scale;
-        if (this.isWalkable(x, z, 0)) {
-          const o = (py * c.width + px) * 4;
-          const v = z <= STAIRS.z0 ? 150 : 128;
-          img.data[o] = v; img.data[o + 1] = v - 6; img.data[o + 2] = v - 20; img.data[o + 3] = 255;
+        const o = (py * c.width + px) * 4;
+        img.data[o + 3] = 255;
+        if (t.walkableAt(x, z)) {
+          const k = clamp((this.heightAt(x, z) - hmin) / (hmax - hmin), 0, 1);
+          const v = 112 + k * 70;
+          img.data[o] = v; img.data[o + 1] = v - 6; img.data[o + 2] = v - 22;
+        } else if (t.waterAt(x, z) > t.groundAt(x, z)) {
+          img.data[o] = 40; img.data[o + 1] = 70; img.data[o + 2] = 96;
+        } else {
+          const g = clamp((t.groundAt(x, z) - hmin) / 30, 0, 1);
+          const v = 26 + g * 22;
+          img.data[o] = v; img.data[o + 1] = v + 2; img.data[o + 2] = v - 2;
         }
       }
     }
@@ -730,4 +995,61 @@ export class Level {
     ctx.putImageData(img, 0, 0);
     return c;
   }
+
+  /** Debug/QA: flood-fills the walk grid from the first checkpoint (gates open) and lists unreachable spots. */
+  checkReachable() {
+    const t = this.terrain;
+    const seen = new Uint8Array(t.walk.length);
+    const start = t.fineIndex(this.zones[0].checkpoint.x, this.zones[0].checkpoint.z);
+    const stack = [start];
+    seen[start] = 1;
+    const ok = (k: number) => {
+      const i = k % t.fnx, j = Math.floor(k / t.fnx);
+      return this.isWalkable(t.fx0 + i * t.cell, t.fz0 + j * t.cell, 0.35);
+    };
+    while (stack.length) {
+      const k = stack.pop()!;
+      const i = k % t.fnx;
+      for (const n of [k - 1, k + 1, k - t.fnx, k + t.fnx]) {
+        if (n < 0 || n >= seen.length || seen[n]) continue;
+        if (Math.abs((n % t.fnx) - i) > 1) continue;
+        seen[n] = 1;
+        if (ok(n)) stack.push(n);
+      }
+    }
+    const L = this.layout;
+    const spots: [string, number, number][] = [
+      ...this.zones.map((z, i) => [`zone${i}`, z.checkpoint.x, z.checkpoint.z] as [string, number, number]),
+      ['boss', this.bossSpot.x, this.bossSpot.z],
+      ...L.chests.map((c) => [`chest:${c.id}`, c.at[0], c.at[1]] as [string, number, number]),
+      ...L.collectables.map((c) => [`item:${c.id}`, c.at[0], c.at[1]] as [string, number, number]),
+      ...L.encounters.map((c) => [`enc:${c.id}`, c.at[0], c.at[1]] as [string, number, number]),
+      ...L.puzzles.flatMap((p) => p.braziers.map((b, i) => [`brazier:${p.id}${i}`, b[0], b[1]] as [string, number, number])),
+    ];
+    const bad: string[] = [];
+    for (const [name, x, z] of spots) {
+      // Anything within 2.5 m of a reached cell counts (chests/braziers are obstacles themselves).
+      let found = false;
+      for (let dz = -2.5; dz <= 2.5 && !found; dz += 0.5) {
+        for (let dx = -2.5; dx <= 2.5 && !found; dx += 0.5) {
+          const k = t.fineIndex(x + dx, z + dz);
+          if (k >= 0 && seen[k] && t.walk[k] && ok(k)) found = true;
+        }
+      }
+      if (!found) bad.push(name);
+    }
+    return bad;
+  }
+}
+
+function shapeBox(s: Shape) {
+  if (s.kind === 'circle') return { x0: s.x - s.r, z0: s.z - s.r, x1: s.x + s.r, z1: s.z + s.r };
+  if (s.kind === 'rect') return { x0: s.x0, z0: s.z0, x1: s.x1, z1: s.z1 };
+  const xs = s.pts.map((p) => p[0]), zs = s.pts.map((p) => p[1]);
+  return { x0: Math.min(...xs), z0: Math.min(...zs), x1: Math.max(...xs), z1: Math.max(...zs) };
+}
+
+function smoothstep(a: number, b: number, v: number) {
+  const t = clamp((v - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
 }
