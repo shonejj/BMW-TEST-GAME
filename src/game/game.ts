@@ -13,9 +13,10 @@ import { clearWorldSave } from '../world/worldsave';
 import { Rain } from '../world/weather';
 import { camDirUniform } from '../world/nature';
 import { CAMERA_MODES, type CameraMode } from '../engine/camera';
+import { markOccluders } from '../engine/occlusion';
 import { Boss, Enemy, EnemyOverlays, Ghoul, Spider, Weaver } from './enemies';
 import {
-  BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
+  BAG_SIZE, CHAPTER_SET, RARITY_COLORS, RARITY_HEX, SET_COLOR, generateItem, generateSetItem, migrateItem, rollRarity, salvageValue, setNextItemId,
   type Inventory, type Item, type Slot,
 } from './loot';
 import { Player } from './player';
@@ -24,6 +25,10 @@ import { loadSave, loadSettings, writeSave, writeSettings, type SaveData, type S
 import { COLORS, Vfx } from './vfx';
 import { Cutscene, v, type Shot } from './cutscene';
 import { CHAPTERS } from './chapters';
+import { Journey } from './journey';
+import { ENDING, STORY, tormentLine } from './story';
+import { PILLS, rollFieldPill } from './items';
+import { StanceHud } from '../ui/stancehud';
 
 export interface StrikeOptions {
   origin: THREE.Vector3;
@@ -39,6 +44,8 @@ export interface StrikeOptions {
   /** Interrupt regular enemies; chip boss poise. */
   stagger?: boolean;
   poise?: number;
+  /** Hit a straight band this wide (each side) out to `range` in front, instead of a cone. */
+  line?: number;
 }
 
 interface Projectile {
@@ -105,6 +112,9 @@ export class Game {
   readonly touch = isTouchDevice();
   settings: Settings;
   inventory: Inventory = { gold: 0, bag: [], equipped: {} };
+  /** Souls-like loop, curios, gourd, medicines, lore and relics (Track D). */
+  readonly journey = new Journey(this);
+  private stanceHud!: StanceHud;
 
   time = 0;
   bestiary: Record<string, number> = {};
@@ -151,11 +161,14 @@ export class Game {
     this.renderer.setLook(this.settings.look);
     this.camRig = new CameraRig(this.renderer.camera);
     this.camRig.setMode(this.settings.camera);
+    this.camRig.autoRecenter = this.settings.autoRecenter;
     this.input = new Input(this.renderer.renderer.domElement);
+    this.input.lookSensitivity = this.settings.lookSensitivity;
     this.hud = new Hud(container);
     const unlock = () => this.audio.unlock();
     this.controls = new Controls(container, this.input, this.touch, unlock);
     this.menus = new Menus(container, this);
+    this.stanceHud = new StanceHud(container, this);
     this.level = new Level(this.renderer.scene);
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
@@ -173,6 +186,7 @@ export class Game {
     const q = this.settings.quality;
     this.level.build(q);
     this.wireExplore();
+    this.camRig.groundAt = (x, z) => this.level.terrainHeight(x, z);
     this.vfx = new Vfx(this.renderer.scene, q === 'low' ? 800 : 1600);
     this.debris = new Debris(this.renderer.scene, (x, z) => this.level.heightAt(x, z));
     this.rain = new Rain(1400);
@@ -267,6 +281,8 @@ export class Game {
     const before = this.level.chapterIndex;
     this.level.applyChapter(c);
     if (this.level.chapterIndex !== before && this.miniMap) this.miniMap = this.level.renderMinimap();
+    markOccluders(this.level.group, this.renderer.scene);
+    this.audio.setChapterAmbience(n);
     this.rain.setStyle(c.theme.weather, c.theme.weatherColor);
     this.rain.setVisibleCount(Math.min(c.theme.weatherCount, this.settings.quality === 'low' ? 350 : this.settings.quality === 'medium' ? 650 : 1400));
     this.renderer.setGrade(c.theme.grade, c.theme.saturation);
@@ -331,7 +347,15 @@ export class Game {
       this.player.talents = save.talents ?? {};
       this.bestiary = save.bestiary ?? {};
       this.player.spells = (save.spells ?? DEFAULT_SPELLS).map((id, i) => (spellUnlocked(id, this.player.talents) ? id : DEFAULT_SPELLS[i]));
-      this.inventory = { gold: save.gold, bag: save.bag, equipped: save.equipped };
+      this.inventory = { gold: save.gold, bag: save.bag.map(migrateItem), equipped: save.equipped };
+      for (const it of Object.values(save.equipped)) if (it) migrateItem(it);
+      this.journey.load(save.journey);
+      this.player.stance = save.journey?.stance ?? 'smash';
+      if (!save.journey && save.level >= 2) {
+        // Saves from before the skill tree rework keep the Monkey King form (and its spark).
+        this.player.talents.sageForm = 1;
+        this.journey.s.bonusSparks++;
+      }
       this.ng = save.ng;
       this.chapter = Math.min(save.chapter ?? 0, CHAPTERS.length - 1);
       this.progress = CHAPTERS.map((_, i) => save.progress?.[i] ?? (i === this.chapter ? save.cleared : 0));
@@ -348,6 +372,8 @@ export class Game {
       this.player.spells = [...DEFAULT_SPELLS];
       this.player.fury = 0;
       this.inventory = { gold: 0, bag: [], equipped: {} };
+      this.journey.reset();
+      this.player.stance = 'smash';
       this.ng = 0;
       this.chapter = 0;
       this.progress = CHAPTERS.map(() => 0);
@@ -398,7 +424,19 @@ export class Game {
     if (p.dynamicRes === false) { this.renderer.dynamicScale = 1; this.renderer.applyPixelRatio(); this.updateParticleScale(); }
     if (p.volume !== undefined) this.audio.setVolume(p.volume);
     if (p.music !== undefined) this.audio.setMusicVolume(p.music);
+    if (p.autoRecenter !== undefined) this.camRig.autoRecenter = p.autoRecenter;
+    if (p.lookSensitivity !== undefined) this.input.lookSensitivity = p.lookSensitivity;
     writeSettings(this.settings);
+  }
+
+  /** Settings → "Customize controls": edit the touch layout over the live view, then back to Settings. */
+  customizeControls() {
+    this.menus.close();
+    this.controls.setVisible(true);
+    this.controls.customize(() => {
+      this.controls.setVisible(this.state === 'playing');
+      if (this.state === 'paused') this.menus.showGameMenu('settings');
+    });
   }
 
   /** Switches camera style; cinematic mode adds letterbox bars while playing. */
@@ -431,6 +469,7 @@ export class Game {
     this.hud.setBoss(null);
     const zones = this.level.zones;
     this.zoneState = zones.map((_, i) => (i < cleared ? 'cleared' : 'idle'));
+    this.respawned.clear();
     this.zoneWave = zones.map(() => 0);
     this.zoneEnemies = zones.map(() => []);
     this.level.gates.forEach((_, i) => {
@@ -449,7 +488,7 @@ export class Game {
   }
 
   restartFromCheckpoint() {
-    const cleared = this.zoneState.findIndex((s) => s !== 'cleared');
+    const cleared = this.firstOpenZone();
     const idx = cleared < 0 ? 0 : cleared;
     // Keep broken props broken; just reset actors and the current zone.
     for (const e of this.enemies) e.dispose();
@@ -471,6 +510,7 @@ export class Game {
     this.player.respawn(this.level.zones[idx].checkpoint);
     this.level.shrines[idx]?.setLit(true);
     this.level.resetExplore();
+    this.repopulate();
     this.camRig.snap(this.player.pos, this.player.yaw);
     this.camRig.setZoom(1);
     this.menus.close();
@@ -486,6 +526,7 @@ export class Game {
     clearWorldSave();
     this.startChapter(0, false);
     this.hud.showTitle(`Torment ${this.ng}`, CHAPTERS[0].place);
+    this.hud.toast(tormentLine(this.ng), '#ff9a6a');
   }
 
   /** After a boss: advance to the next chapter (unlocking it) or loop into Torment on the last. */
@@ -499,7 +540,7 @@ export class Game {
    * start of the next chapter; 'torment' (last chapter done) loops back to chapter one one Torment higher.
    */
   private save(mode: 'normal' | 'advance' | 'torment' = 'normal') {
-    const firstOpen = this.zoneState.findIndex((s) => s !== 'cleared');
+    const firstOpen = this.firstOpenZone();
     if (mode === 'normal') this.progress[this.chapter] = Math.max(this.progress[this.chapter] ?? 0, firstOpen < 0 ? this.level.zones.length - 1 : firstOpen);
     const chapter = mode === 'advance' ? this.chapter + 1 : mode === 'torment' ? 0 : this.chapter;
     const progress = this.progress.map((p, i) => (mode === 'torment' ? 0 : mode === 'advance' && i === chapter ? 0 : p));
@@ -521,8 +562,30 @@ export class Game {
       chapter,
       progress,
       unlocked: this.unlocked,
+      journey: { ...this.journey.toSave(), stance: this.player.stance },
     };
     writeSave(data);
+  }
+
+  /** Saves shortly (batched). */
+  requestSave() {
+    this.saveTimer = Math.max(this.saveTimer, 0.3);
+  }
+
+  /** Level used to roll loot here (zone level plus Torment). */
+  lootLevel() {
+    return this.currentLevel();
+  }
+  get ngLevel() {
+    return this.ng;
+  }
+  get isPlaying() {
+    return this.state === 'playing' && !this.cutscene;
+  }
+
+  /** Records a found lore note (world track: call when the player picks one up). */
+  findLore(id: string) {
+    return this.journey.findLore(id);
   }
 
   // -------------------------------------------------------------------------
@@ -545,8 +608,12 @@ export class Game {
       if (!e.alive) continue;
       const dx = e.pos.x - o.origin.x, dz = e.pos.z - o.origin.z;
       const d = Math.hypot(dx, dz);
-      if (d > o.range + e.radius) continue;
-      if (o.halfArc < Math.PI && d > 0.5) {
+      if (o.line !== undefined) {
+        const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+        const along = dx * fx + dz * fz;
+        if (along < -e.radius - 0.5 || along > o.range + e.radius || Math.abs(dx * fz - dz * fx) > o.line + e.radius) continue;
+      } else if (d > o.range + e.radius) continue;
+      else if (o.halfArc < Math.PI && d > 0.5) {
         let da = Math.abs(yawOf(dx, dz) - o.yaw) % (Math.PI * 2);
         if (da > Math.PI) da = Math.PI * 2 - da;
         if (da > o.halfArc + Math.atan2(e.radius, d)) continue;
@@ -603,11 +670,11 @@ export class Game {
     this.camRig.shake(0.12, 0.1);
     const lvl = this.currentLevel();
     if (chance(0.55)) this.dropGold(b.pos, randInt(2, 8) * lvl);
-    if (chance(b.def.radius > 0.8 ? 0.6 : 0.08)) this.dropItem(b.pos, lvl, 0);
+    if (chance(b.def.radius > 0.8 ? 0.25 : 0.03)) this.dropItem(b.pos, lvl, 10, Math.max(1, rollRarity(10)));
   }
 
   private currentLevel() {
-    const i = this.zoneState.findIndex((s) => s !== 'cleared');
+    const i = this.firstOpenZone();
     return this.level.zones[i < 0 ? 0 : i].level + this.ng * 8;
   }
 
@@ -644,13 +711,26 @@ export class Game {
     this.vfx.soul(e.pos, e.isBoss ? 2.5 : e.kind === 'spiderling' ? 0.7 : 1);
     this.bestiary[e.kind] = (this.bestiary[e.kind] ?? 0) + 1;
     this.gainXp(e.xp);
+    this.player.onKill();
     if (this.player.stats.powers.has('killMana')) this.player.mana = Math.min(this.player.stats.maxMana, this.player.mana + 8);
     if (e.isBoss) return;
     const [g0, g1] = e.def.gold;
     const piles = e.elite ? 3 : 1;
     for (let i = 0; i < piles; i++) if (chance(e.kind === 'spiderling' ? 0.4 : 0.9)) this.dropGold(e.pos, Math.round(rand(g0, g1) * (1 + e.level * 0.4)));
-    const drops = e.elite ? 2 : chance(e.def.dropChance) ? 1 : 0;
-    for (let i = 0; i < drops; i++) this.dropItem(e.pos, e.level, (e.elite ? 25 : 0) + this.ng * 4);
+    // Fewer, better drops: common rolls become Will, ordinary foes sometimes leave a medicine instead,
+    // elites can drop a piece of this chapter's set.
+    const drops = e.elite ? 2 : chance(e.def.dropChance * 0.45) ? 1 : 0;
+    for (let i = 0; i < drops; i++) {
+      if (e.elite && i === 0 && chance(0.25)) { this.dropItem(e.pos, e.level, 0, 3, generateSetItem(e.level, CHAPTER_SET[Math.min(this.chapter, CHAPTER_SET.length - 1)])); continue; }
+      const r = rollRarity((e.elite ? 25 : 0) + this.ng * 4);
+      if (r === 0) this.dropGold(e.pos, Math.round(rand(g0, g1) * (1 + e.level * 0.4)));
+      else this.dropItem(e.pos, e.level, 0, r);
+    }
+    if (chance(e.elite ? 0.5 : 0.05)) {
+      const id = rollFieldPill();
+      this.journey.grant([{ kind: 'pill', id, count: 1 }], true);
+      this.hud.floatText(e.pos, PILLS[id].name, 'focus-pop', 1.2);
+    }
     this.vfx.sparks.emit(e.pos.x, e.pos.y + 0.5, e.pos.z, { count: 12, radius: e.radius, speed: [1, 4], up: [1, 4], life: [0.3, 0.7], color: 0xff3020, color2: 0x801010 });
   }
 
@@ -667,7 +747,7 @@ export class Game {
       this.vfx.shockwave(p.pos, 3, COLORS.gold, 0.6);
       this.vfx.sparks.emit(p.pos.x, p.pos.y + 1, p.pos.z, { count: 40, radius: 0.8, speed: [0.5, 2], up: [3, 9], gravity: -1, life: [0.6, 1.4], color: COLORS.goldHot, color2: COLORS.gold });
       this.hud.floatText(p.pos, 'LvL Up ⬆', 'levelup', 1.8);
-      if (pointsAvailable(p.level, p.talents) > 0) this.hud.toast('Talent point available — open the menu (Self-Advance)', '#ffd46a');
+      if (pointsAvailable(p.level, p.talents, this.journey.s.bonusSparks) > 0) this.hud.toast('Spark available — open the menu (Self-Advance) to learn a skill', '#ffd46a');
       this.audio.play('levelup');
       this.vfx.twinkle(p.pos, 1.4, 12);
     }
@@ -798,8 +878,8 @@ export class Game {
     this.drops.push({ kind: 'gold', obj, from: from.clone(), to, age: 0, amount, magnet: false });
   }
 
-  private dropItem(from: THREE.Vector3, level: number, bias: number, rarity = rollRarity(bias)) {
-    const item = generateItem(level, rarity);
+  private dropItem(from: THREE.Vector3, level: number, bias: number, rarity = rollRarity(bias), preset?: Item) {
+    const item = preset ?? generateItem(level, rarity);
     const mat = new THREE.MeshLambertMaterial({ color: RARITY_HEX[rarity], emissive: RARITY_HEX[rarity], emissiveIntensity: 0.7 });
     const obj = new THREE.Mesh(gemGeo, mat);
     obj.position.copy(from);
@@ -841,8 +921,8 @@ export class Game {
         d.obj.rotation.y += dt * 12;
       } else {
         if (!d.label) {
-          const text = d.kind === 'gold' ? `${d.amount}g` : d.item!.name;
-          const color = d.kind === 'gold' ? '#ffe08a' : RARITY_COLORS[d.item!.rarity];
+          const text = d.kind === 'gold' ? `${d.amount} Will` : d.item!.name;
+          const color = d.kind === 'gold' ? '#ffe08a' : d.item!.set ? SET_COLOR : RARITY_COLORS[d.item!.rarity];
           d.label = this.hud.addLabel(d.to, text, color, d.kind === 'gold' ? 'gold-label' : 'r' + d.item!.rarity);
         }
         d.obj.position.copy(d.to);
@@ -887,7 +967,7 @@ export class Game {
   learnTalent(id: TalentId) {
     const p = this.player;
     const def = TALENTS.find((t) => t.id === id)!;
-    if (canLearn(def, p.talents, p.level)) return;
+    if (canLearn(def, p.talents, p.level, this.journey.s.bonusSparks)) return;
     p.talents[id] = (p.talents[id] ?? 0) + 1;
     p.computeStats(this.inventory);
     this.audio.play('levelup');
@@ -988,13 +1068,14 @@ export class Game {
   }
 
   onBossBroken(boss: Enemy) {
-    this.hud.toast('Broken! The Blackfeather Lord reels', '#ffd46a');
+    this.hud.toast(`Broken! The ${boss.def.name} reels`, '#ffd46a');
     this.vfx.flash(this.tmp.set(boss.pos.x, boss.pos.y + 3, boss.pos.z), 4, COLORS.goldHot, 0.25);
     this.audio.play('perfect');
     this.slowmo(0.25);
   }
 
   onPlayerDeath() {
+    this.journey.onDeath(this.player.pos);
     this.state = 'dead';
     this.deathTimer = 1.6;
     this.controls.setVisible(false);
@@ -1009,9 +1090,11 @@ export class Game {
     this.vfx.beam(boss.pos, COLORS.jade, 20, 2.5, 3);
     for (let i = 0; i < 4; i++) this.dropGold(boss.pos, Math.round(rand(300, 500) * (1 + this.ng)));
     const lvl = boss.level;
-    this.dropItem(boss.pos, lvl, 0, 3);
     this.dropItem(boss.pos, lvl, 0, chance(0.35 + this.ng * 0.1) ? 4 : 3);
-    for (let i = 0; i < 3; i++) this.dropItem(boss.pos, lvl, 30 + this.ng * 5);
+    this.dropItem(boss.pos, lvl, 30 + this.ng * 5, Math.max(2, rollRarity(30 + this.ng * 5)));
+    this.journey.onBossDefeated(this.chapter, lvl);
+    const last = STORY[this.chapter]?.bossDeath;
+    if (last) this.hud.setSubtitle(last[0][0], last[0][1]);
     for (const e of this.enemies) if (e.alive && !e.isBoss) { e.hp = 0; e.kill(); }
     this.hud.toast(`${boss.def.name} defeated!`, '#9cff6a');
     this.victoryTimer = 6;
@@ -1189,6 +1272,7 @@ export class Game {
         this.updateProjectiles(dt);
         this.updateHazards(dt);
         this.updateDrops(dt);
+        this.journey.update(dt);
       }
       this.debris.update(dt);
       this.vfx.update(dt);
@@ -1203,7 +1287,10 @@ export class Game {
     if (this.cutscene) {
       if (this.input.anyPress && this.cutscene.elapsed > 0.4) this.cutscene.skip();
       this.cutscene?.update(rawDt);
-    } else this.camRig.update(rawDt, pl.pos, pl.yaw, this.time);
+    } else {
+      this.camRig.orbit(this.input, rawDt);
+      this.camRig.update(rawDt, pl.pos, pl.yaw, this.time);
+    }
     this.input.anyPress = false;
     if (this.state === 'paused' && this.menus.current === 'game') this.portraitShot(rawDt);
     this.overlays.update(this.enemies, this.renderer.camera);
@@ -1212,15 +1299,16 @@ export class Game {
     // UI
     const p = this.player;
     this.hud.setStats(p.hp, p.stats.maxHp, p.mana, p.stats.maxMana, p.xp, p.xpToNext, p.level, this.inventory.gold);
-    this.hud.update(dt > 0 ? rawDt : 0, this.renderer.camera);
+    this.hud.update(dt > 0 ? rawDt : 0, this.renderer.camera, p.pos);
     this.controls.update(p);
+    this.stanceHud.update(rawDt);
     this.hud.setFocus(p.focus);
     this.audio.boss = !!(this.boss && this.boss.alive);
     if (this.boss && this.boss.alive) this.hud.setBoss(this.boss.def.name + (this.ng ? ` · Torment ${this.ng}` : ''), this.boss.hp / this.boss.maxHp);
     this.miniTimer -= rawDt;
     if (this.miniTimer <= 0) {
       this.miniTimer = 0.1;
-      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates);
+      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates, this.camRig.yaw);
     }
     const near = this.targets().filter((e) => e.pos.distanceTo(p.pos) < 18).length;
     this.audio.combatIntensity += ((near > 0 ? 1 : 0) - this.audio.combatIntensity) * Math.min(1, rawDt * 0.8);
@@ -1231,7 +1319,11 @@ export class Game {
       if (this.deathTimer <= 0 && this.menus.current !== 'dead') this.menus.showDeath();
     }
     if (this.victoryTimer > 0 && this.state === 'playing') {
+      const before = this.victoryTimer;
       this.victoryTimer -= rawDt;
+      const dl = STORY[this.chapter]?.bossDeath;
+      if (dl && before > 3.2 && this.victoryTimer <= 3.2) this.hud.setSubtitle(dl[1][0], dl[1][1]);
+      if (before > 0.6 && this.victoryTimer <= 0.6) this.hud.setSubtitle('', '');
       if (this.victoryTimer <= 0) {
         if (this.settings.cutscenes) this.playVictoryScene();
         else this.showVictory();
@@ -1267,14 +1359,14 @@ export class Game {
 
   private playIntro() {
     const p = this.player.pos;
-    const c = CHAPTERS[this.chapter];
+    const c = { ...CHAPTERS[this.chapter], intro: STORY[this.chapter]?.intro ?? CHAPTERS[this.chapter].intro };
     // Fly over the map: from above the boss arena, then back down the route towards the hero.
     const b = this.level.bossSpot, r = this.level.route;
     const mid = r[Math.floor(r.length * 0.55)] ?? b, low = r[Math.floor(r.length * 0.25)] ?? p;
     this.startCutscene([
       { dur: 4.6, from: { pos: v(b.x - 12, b.y + 12, b.z + 25), look: v(b.x, b.y + 2, b.z - 20) }, to: { pos: v(b.x + 7, b.y + 6, b.z + 13), look: v(b.x, b.y + 1, b.z - 18) }, subtitle: c.intro[0] },
       { dur: 4.4, from: { pos: v(mid.x - 14, mid.y + 12, mid.z - 10), look: v(mid.x, mid.y, mid.z + 2) }, to: { pos: v(low.x + 10, low.y + 11, low.z - 6), look: v(low.x, low.y + 1, low.z + 12) }, subtitle: c.intro[1] },
-      { dur: 4.2, from: { pos: v(-8, 9, 18), look: v(p.x, 1, p.z) }, to: { pos: v(p.x + 2, 6.5, p.z + 8), look: v(p.x, 1.2, p.z - 1) },
+      { dur: 4.2, from: { pos: v(p.x - 8, p.y + 9, p.z + 12), look: v(p.x, p.y + 1, p.z) }, to: { pos: v(p.x + 2, 6.5, p.z + 8), look: v(p.x, 1.2, p.z - 1) },
         title: [c.title, c.place], subtitle: c.intro[2] },
     ]);
   }
@@ -1282,26 +1374,31 @@ export class Game {
   private playBossIntro() {
     const s = this.level.bossSpot;
     const b = v(s.x, s.y, s.z);
-    const c = CHAPTERS[this.chapter];
+    const c = { ...CHAPTERS[this.chapter], bossIntro: STORY[this.chapter]?.bossIntro ?? CHAPTERS[this.chapter].bossIntro };
     this.startCutscene([
       { dur: 2.6, from: { pos: v(b.x, b.y + 6, b.z + 19), look: v(b.x, b.y + 4, b.z - 5) }, to: { pos: v(b.x - 5, b.y + 2, b.z + 13), look: v(b.x, b.y + 1, b.z) },
         onStart: () => this.audio.play('roar'), subtitle: c.bossIntro[0] },
       { dur: 3.2, from: { pos: v(b.x + 6, b.y + 1.5, b.z + 7), look: v(b.x, b.y + 2, b.z) }, to: { pos: v(b.x + 4, b.y + 2.5, b.z + 9), look: v(b.x, b.y + 3, b.z) }, title: [this.level.zones[this.level.zones.length - 1].name, c.bossName],
         subtitle: c.bossIntro[1] },
-      { dur: 2.6, from: { pos: v(this.player.pos.x + 3, 8, this.player.pos.z + 7), look: v(this.player.pos.x, 6, this.player.pos.z) }, to: { pos: v(this.player.pos.x + 1, 7, this.player.pos.z + 6), look: v(this.player.pos.x, 6, this.player.pos.z - 2) },
+      { dur: 2.6, from: { pos: v(this.player.pos.x + 3, this.player.pos.y + 3, this.player.pos.z + 7), look: v(this.player.pos.x, this.player.pos.y + 1.4, this.player.pos.z) }, to: { pos: v(this.player.pos.x + 1, this.player.pos.y + 2, this.player.pos.z + 6), look: v(this.player.pos.x, this.player.pos.y + 1.4, this.player.pos.z - 2) },
         subtitle: c.bossIntro[2] },
     ]);
   }
 
   private playVictoryScene() {
     const p = this.player.pos.clone();
-    this.startCutscene([
+    const after = STORY[this.chapter]?.after ?? [['', ''], ['', '']];
+    const shots: Shot[] = [
       { dur: 5, from: { pos: v(p.x + 7, p.y + 4, p.z + 5), look: v(p.x, p.y + 1.2, p.z) }, to: { pos: v(p.x - 6, p.y + 3, p.z + 6), look: v(p.x, p.y + 1.4, p.z) },
-        subtitle: ['Little Monkey', 'One down. The mountain still remembers the Great Sage.'] },
-      { dur: 3.5, from: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 9, this.level.bossSpot.z + 15), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 3, this.level.bossSpot.z - 19) },
-        to: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 15, this.level.bossSpot.z + 23), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 4, this.level.bossSpot.z - 19) }, subtitle: ['', 'The temple bells ring again.'],
+        subtitle: after[0] },
+      { dur: 4.5, from: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 9, this.level.bossSpot.z + 15), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 3, this.level.bossSpot.z - 19) },
+        to: { pos: v(this.level.bossSpot.x, this.level.bossSpot.y + 15, this.level.bossSpot.z + 23), look: v(this.level.bossSpot.x, this.level.bossSpot.y + 4, this.level.bossSpot.z - 19) }, subtitle: after[1],
         onStart: () => this.audio.play('seal') },
-    ], () => this.showVictory());
+    ];
+    if (this.chapter === CHAPTERS.length - 1) {
+      shots.push({ dur: 5, from: { pos: v(p.x + 3, p.y + 12, p.z + 8), look: v(p.x, p.y + 1, p.z) }, to: { pos: v(p.x + 2, p.y + 26, p.z + 10), look: v(p.x, p.y + 1, p.z) }, subtitle: ['', ENDING] });
+    }
+    this.startCutscene(shots, () => this.showVictory());
   }
 
   private showVictory() {
@@ -1323,7 +1420,7 @@ export class Game {
       this.progress[this.chapter + 1] = this.progress[this.chapter + 1] ?? 0;
     }
     this.menus.showVictory({ time: `${Math.floor(t / 60)}m ${t % 60}s`, kills: this.kills, gold: this.inventory.gold, level: this.player.level, ng: this.ng,
-      title: c.title, text: c.victory, next: last ? null : CHAPTERS[this.chapter + 1].place });
+      title: c.title, text: STORY[this.chapter]?.victory ?? c.victory, next: last ? null : CHAPTERS[this.chapter + 1].place });
     this.save(last ? 'torment' : 'advance');
   }
 
@@ -1394,7 +1491,11 @@ export class Game {
       this.audio.play('focus');
       this.rumble(0.3, 120);
       if (first) this.hud.showTitle("Keeper's Shrine", this.level.zones[i].name);
-      else this.hud.toast('Rested at the shrine · health and gourd restored', '#ffd27a');
+      else {
+        const n = this.repopulate();
+        this.level.resetExplore();
+        this.hud.toast(`Rested at the shrine · health and gourd restored${n ? ' · the yaoguai stir again' : ''}`, '#ffd27a');
+      }
       this.save();
     });
   }
@@ -1405,11 +1506,15 @@ export class Game {
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i];
       const st = this.zoneState[i];
-      if (st === 'idle' && this.level.zoneTriggered(i, p) && (i === 0 || this.zoneState[i - 1] === 'cleared' || zones[i - 1].opensGate === undefined)) {
+      const again = this.respawned.has(i);
+      const a = z.area;
+      if (st === 'idle' && again ? p.x > a.x0 - 1 && p.x < a.x1 + 1 && p.z > a.z0 - 1 && p.z < a.z1 + 1
+        : st === 'idle' && this.level.zoneTriggered(i, p) && (i === 0 || this.zoneState[i - 1] === 'cleared' || zones[i - 1].opensGate === undefined)) {
         this.zoneState[i] = 'active';
         this.zoneWave[i] = 0;
         this.spawnWave(i);
         this.waveDelay = 0;
+        if (again) continue;
         if (z.closesGate !== undefined) this.level.setGate(z.closesGate, true);
         if (i === zones.length - 1) {
           if (this.settings.cutscenes) this.playBossIntro();
@@ -1419,7 +1524,7 @@ export class Game {
       }
       if (this.zoneState[i] !== 'active') continue;
       const alive = this.zoneEnemies[i].filter((e) => e.alive).length;
-      if (this.zoneWave[i] < z.waves.length - 1) {
+      if (this.zoneWave[i] < z.waves.length - 1 && !again) {
         if (alive <= 1) {
           this.waveDelay += dt;
           if (this.waveDelay > 0.8) {
@@ -1428,6 +1533,10 @@ export class Game {
             this.spawnWave(i);
           }
         }
+      } else if (alive === 0 && again) {
+        this.zoneState[i] = 'cleared';
+        this.respawned.delete(i);
+        continue;
       } else if (alive === 0) {
         this.zoneState[i] = 'cleared';
         this.player.refillGourd();
@@ -1448,6 +1557,34 @@ export class Game {
       this.lastZoneName = here;
       this.hud.setLocation(here);
     }
+  }
+
+  /** First zone not yet beaten (zones restocked by resting count as beaten). */
+  private firstOpenZone() {
+    return this.zoneState.findIndex((s, i) => s !== 'cleared' && !this.respawned.has(i));
+  }
+
+  /** Zones whose regular foes came back after a rest (they fight one wave, with no gates). */
+  private respawned = new Set<number>();
+
+  /**
+   * Souls-like rest: every cleared zone except the boss's fills with yaoguai again (its first wave) and
+   * fights the moment you walk back in. Returns how many zones were restocked.
+   */
+  private repopulate() {
+    const zones = this.level.zones;
+    let n = 0;
+    for (let i = 0; i < zones.length - 1; i++) {
+      if (this.zoneState[i] !== 'cleared' && !this.respawned.has(i)) continue;
+      for (const e of this.zoneEnemies[i]) if (e.alive) e.dispose();
+      this.zoneEnemies[i] = [];
+      this.zoneState[i] = 'idle';
+      this.zoneWave[i] = 0;
+      this.respawned.add(i);
+      n++;
+    }
+    this.enemies = this.enemies.filter((e) => !e.removed);
+    return n;
   }
 
   /** Keeps enemies from overlapping each other and the player. */

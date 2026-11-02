@@ -4,12 +4,12 @@ Each track is owned by one agent working in its own worktree. Tracks are merged 
 built, checked in the browser and deployed to GitHub Pages after each merge.
 
 ## Track A — Camera, controls, HUD, audio
-- [ ] 2D side view: foreground trees/roofs/props between camera and hero must fade or be culled (screen is blocked)
-- [ ] Minimap is upside down / mirrored — match world orientation and rotate with the camera
-- [ ] Floating collectable labels show through walls / in the boss arena — only show near the player, in range and line of sight
-- [ ] 3rd-person camera: free orbit (right stick, mouse drag, touch drag on the right half), collision pull-in
-- [ ] Mobile: customise the gamepad — drag to rearrange, resize, opacity, reset; saved per device
-- [ ] Music: no wall-to-wall score. Ambient beds per chapter (rain, wind, birds, water, cave), music only for combat/boss/story beats, silence between
+- [x] 2D side view: foreground trees/roofs/props between camera and hero must fade or be culled (screen is blocked)
+- [x] Minimap is upside down / mirrored — match world orientation and rotate with the camera
+- [x] Floating collectable labels show through walls / in the boss arena — only show near the player, in range and line of sight
+- [x] 3rd-person camera: free orbit (right stick, mouse drag, touch drag on the right half), collision pull-in
+- [x] Mobile: customise the gamepad — drag to rearrange, resize, opacity, reset; saved per device
+- [x] Music: no wall-to-wall score. Ambient beds per chapter (rain, wind, birds, water, cave), music only for combat/boss/story beats, silence between
 
 ## Track B — Characters and enemies
 - [ ] Research free/CC0 rigged characters (Quaternius Universal Base Characters / modular outfits, KayKit, etc.) compatible with the UAL rig

@@ -8,9 +8,13 @@ import manifest from '../assets/audio/manifest.json';
  * and pitch so repeats never sound identical.
  *
  * The score is sequenced live from real instrument samples (Vietnamese dan tranh zither standing in for a
- * guzheng, erhu, ocarina for a xun flute, taiko, frame drums, gongs) in G♯ minor pentatonic. It is
- * adaptive by horizontal re-sequencing: explore, combat and boss sections switch on bar lines, with a
- * drum or gong stinger, as the fight heats up.
+ * guzheng, erhu, ocarina for a xun flute, taiko, frame drums, gongs) in G♯ minor pentatonic.
+ *
+ * Music is not wall-to-wall: exploring is carried by a per-chapter ambient soundscape (rain and thunder,
+ * wind and sand, streams, insects, cave drips — synthesised live from noise and filters, plus the recorded
+ * rain), with only a rare, sparse zither phrase. The score fades in when enemies close in (taiko stinger),
+ * holds a few seconds after the last one, then fades back out to ambience; bosses and the title screen have
+ * their own sections, and shrines/discoveries get short stingers.
  */
 export type Sfx =
   | 'swing' | 'swingHeavy' | 'hit' | 'crit' | 'shatter' | 'coin' | 'pickup' | 'levelup'
@@ -108,6 +112,69 @@ const BPM: Record<Mode, number> = { title: 70, explore: 76, combat: 112, boss: 1
 
 interface Sample { buf: AudioBuffer; midi: number | null }
 
+// ---------------------------------------------------------------------------
+// Ambience
+// ---------------------------------------------------------------------------
+
+/** A looping bed: recorded rain, or white/brown noise through a filter. `gust` makes level and colour wander. */
+interface Bed { src: 'rain' | 'white' | 'brown'; filter?: BiquadFilterType; freq?: number; q?: number; vol: number; gust?: number }
+type AmbEventKind = 'thunder' | 'bird' | 'cricket' | 'plip' | 'drip' | 'hawk' | 'gust' | 'creak' | 'howl' | 'cicada';
+/** A one-shot sound repeating at random intervals of `every` seconds. */
+interface AmbEvent { kind: AmbEventKind; every: [number, number]; vol: number }
+interface Soundscape { beds: Bed[]; events: AmbEvent[] }
+
+/** One soundscape per chapter (index wraps if there are more chapters than entries). */
+const SOUNDSCAPES: Soundscape[] = [
+  // Mountain-Sea Temple: night rain on stone, a stream, distant thunder, insects and the odd night bird.
+  {
+    beds: [
+      { src: 'rain', vol: 0.22 },
+      { src: 'white', filter: 'highpass', freq: 3200, vol: 0.025 },
+      { src: 'brown', filter: 'bandpass', freq: 900, q: 0.8, vol: 0.06, gust: 0.25 },
+      { src: 'brown', filter: 'lowpass', freq: 260, vol: 0.05, gust: 0.4 },
+    ],
+    events: [
+      { kind: 'thunder', every: [22, 55], vol: 0.55 },
+      { kind: 'cricket', every: [1.5, 5], vol: 0.035 },
+      { kind: 'bird', every: [9, 24], vol: 0.05 },
+      { kind: 'plip', every: [0.25, 1.1], vol: 0.03 },
+    ],
+  },
+  // Yellow Wind Ridge: gusting canyon wind, hissing sand, cicadas, a hawk circling far above.
+  {
+    beds: [
+      { src: 'brown', filter: 'bandpass', freq: 480, q: 0.9, vol: 0.16, gust: 0.8 },
+      { src: 'white', filter: 'highpass', freq: 5000, vol: 0.02, gust: 0.9 },
+      { src: 'brown', filter: 'lowpass', freq: 120, vol: 0.06 },
+    ],
+    events: [
+      { kind: 'gust', every: [6, 14], vol: 0.14 },
+      { kind: 'hawk', every: [20, 45], vol: 0.05 },
+      { kind: 'cicada', every: [10, 26], vol: 0.025 },
+      { kind: 'bird', every: [18, 40], vol: 0.03 },
+    ],
+  },
+  // Frozen Bone Sanctum: thin whistling ice wind, a cave drone, drips echoing, ice creaking.
+  {
+    beds: [
+      { src: 'white', filter: 'bandpass', freq: 1500, q: 7, vol: 0.035, gust: 0.7 },
+      { src: 'brown', filter: 'lowpass', freq: 320, vol: 0.08, gust: 0.5 },
+      { src: 'brown', filter: 'lowpass', freq: 85, vol: 0.07 },
+    ],
+    events: [
+      { kind: 'drip', every: [1.2, 4.5], vol: 0.06 },
+      { kind: 'howl', every: [9, 20], vol: 0.06 },
+      { kind: 'creak', every: [14, 34], vol: 0.05 },
+    ],
+  },
+];
+
+interface LiveBed { def: Bed; src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode | null; nextGust: number }
+
+/** Seconds the score holds after the last enemy leaves before fading out. */
+const COMBAT_HOLD = 4;
+const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+
 export class Audio {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
@@ -116,6 +183,20 @@ export class Audio {
   private ambBus!: GainNode;
   private reverbIn!: GainNode;
   private noiseBuf!: AudioBuffer;
+  private brownBuf!: AudioBuffer;
+  /** Fades the sequenced score in and out (combat/boss/title), under the music volume. */
+  private scoreBus!: GainNode;
+  private ambDuck!: GainNode;
+  private beds: LiveBed[] = [];
+  private ambEvents: { def: AmbEvent; next: number }[] = [];
+  private chapterAmb = 0;
+  private lastCombat = -1e9;
+  private fadingOut = false;
+  private fadeEnd = 0;
+  /** Exploring: bars left in the current sparse zither phrase, and when the next may start. */
+  private phraseBars = 0;
+  private nextPhraseAt = 0;
+  private ducked = false;
   private lastPlay = new Map<Sfx, number>();
   private sets = new Map<SetName, AudioBuffer[]>();
   private inst = new Map<InstName, Sample[]>();
@@ -166,11 +247,32 @@ export class Audio {
     this.sfxBus = this.bus(0.14);
     this.musicBus = this.bus(0.45);
     this.musicBus.gain.value = this.gain(this.musicVolume);
+    this.scoreBus = ctx.createGain();
+    this.scoreBus.gain.value = 0;
+    this.scoreBus.connect(this.musicBus);
     this.ambBus = this.bus(0.2);
+    this.ambDuck = ctx.createGain();
+    this.ambDuck.connect(this.ambBus);
 
-    this.noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const d = this.noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // Long noise loops (4 s) so beds never audibly repeat; brown noise for wind/water rumble.
+    const len = ctx.sampleRate * 4;
+    this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    this.brownBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = this.noiseBuf.getChannelData(0), b = this.brownBuf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      d[i] = w;
+      last = (last + 0.02 * w) / 1.02;
+      b[i] = last * 3.5;
+    }
+    // Crossfade the loop seam.
+    const fade = 2048;
+    for (let i = 0; i < fade; i++) {
+      const k = i / fade;
+      d[len - fade + i] = d[len - fade + i] * (1 - k) + d[i] * k;
+      b[len - fade + i] = b[len - fade + i] * (1 - k) + b[i] * k;
+    }
     this.load();
   }
 
@@ -187,7 +289,7 @@ export class Audio {
     }
     await Promise.allSettled(jobs);
     this.loaded = true;
-    this.startAmbience();
+    this.startAmbience(this.chapterAmb);
     this.nextStep = ctx.currentTime + 0.1;
     // The sequencer runs on its own timer, not the render loop, so slow or hitching frames never
     // starve it (Web Audio "two clocks" scheduling).
@@ -229,30 +331,240 @@ export class Audio {
     if (this.ctx) this.musicBus.gain.value = this.gain(v);
   }
 
-  private startAmbience() {
+  /** Switches the ambient soundscape to chapter `i` (crossfades; safe to call before audio is unlocked). */
+  setChapterAmbience(i: number) {
+    this.chapterAmb = i;
+    if (this.ctx && this.loaded) this.startAmbience(i);
+  }
+
+  private startAmbience(i: number) {
     const ctx = this.ctx!;
-    const rain = this.sets.get('rain')?.[0];
-    if (rain) {
-      const src = ctx.createBufferSource();
-      src.buffer = rain;
-      src.loop = true;
-      const g = ctx.createGain();
-      g.gain.value = 0.22;
-      src.connect(g).connect(this.ambBus);
-      src.start();
+    const now = ctx.currentTime;
+    for (const b of this.beds) {
+      b.gain.gain.cancelScheduledValues(now);
+      b.gain.gain.setValueAtTime(b.gain.gain.value, now);
+      b.gain.gain.linearRampToValueAtTime(0, now + 2);
+      b.src.stop(now + 2.1);
     }
-    // Low wind under the rain.
-    const w = ctx.createBufferSource();
-    w.buffer = this.noiseBuf;
-    w.loop = true;
-    w.playbackRate.value = 0.4;
-    const wf = ctx.createBiquadFilter();
-    wf.type = 'lowpass';
-    wf.frequency.value = 260;
-    const wg = ctx.createGain();
-    wg.gain.value = 0.05;
-    w.connect(wf).connect(wg).connect(this.ambBus);
-    w.start();
+    this.beds = [];
+    const sc = SOUNDSCAPES[((i % SOUNDSCAPES.length) + SOUNDSCAPES.length) % SOUNDSCAPES.length];
+    for (const def of sc.beds) {
+      const buf = def.src === 'rain' ? this.sets.get('rain')?.[0] : def.src === 'white' ? this.noiseBuf : this.brownBuf;
+      if (!buf) continue;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      // Random start offsets so layered noise beds never phase together.
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(def.vol, now + 2.5);
+      let filter: BiquadFilterNode | null = null;
+      if (def.filter) {
+        filter = ctx.createBiquadFilter();
+        filter.type = def.filter;
+        filter.frequency.value = def.freq ?? 1000;
+        filter.Q.value = def.q ?? 0.7;
+        src.connect(filter).connect(gain);
+      } else src.connect(gain);
+      gain.connect(this.ambDuck);
+      src.start(now, Math.random() * buf.duration);
+      this.beds.push({ def, src, gain, filter, nextGust: now + rnd(1, 3) });
+    }
+    this.ambEvents = sc.events.map((def) => ({ def, next: now + rnd(def.every[0] * 0.3, def.every[1] * 0.6) }));
+  }
+
+  /** Gusts on the beds and the random one-shots; runs on the scheduler timer. */
+  private ambTick(now: number) {
+    for (const b of this.beds) {
+      const g = b.def.gust;
+      if (!g || now < b.nextGust) continue;
+      const dur = rnd(1.5, 4.5);
+      b.nextGust = now + dur;
+      const level = b.def.vol * (1 - g * 0.6 + Math.random() * g * 1.1);
+      b.gain.gain.cancelScheduledValues(now);
+      b.gain.gain.setValueAtTime(b.gain.gain.value, now);
+      b.gain.gain.linearRampToValueAtTime(level, now + dur);
+      if (b.filter && b.def.freq) {
+        b.filter.frequency.cancelScheduledValues(now);
+        b.filter.frequency.setValueAtTime(b.filter.frequency.value, now);
+        b.filter.frequency.linearRampToValueAtTime(b.def.freq * (1 - g * 0.35 + Math.random() * g * 0.9), now + dur);
+      }
+    }
+    for (const e of this.ambEvents) {
+      if (now < e.next) continue;
+      e.next = now + rnd(e.def.every[0], e.def.every[1]);
+      this.ambEvent(e.def.kind, now + 0.05, e.def.vol);
+    }
+  }
+
+  private noiseSrc(brown: boolean, when: number, dur: number) {
+    const src = this.ctx!.createBufferSource();
+    src.buffer = brown ? this.brownBuf : this.noiseBuf;
+    src.loop = true;
+    src.start(when, Math.random() * 3);
+    src.stop(when + dur);
+    return src;
+  }
+
+  private env(when: number, attack: number, peak: number, decay: number, exp = true) {
+    const g = this.ctx!.createGain();
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.linearRampToValueAtTime(peak, when + attack);
+    if (exp) g.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay);
+    else g.gain.linearRampToValueAtTime(0, when + attack + decay);
+    return g;
+  }
+
+  private tone(type: OscillatorType, when: number, dur: number) {
+    const o = this.ctx!.createOscillator();
+    o.type = type;
+    o.start(when);
+    o.stop(when + dur + 0.05);
+    return o;
+  }
+
+  private ambEvent(kind: AmbEventKind, t: number, vol: number) {
+    const ctx = this.ctx!;
+    const out = this.ambDuck;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rnd(-0.8, 0.8);
+    pan.connect(out);
+    switch (kind) {
+      case 'thunder': {
+        // A crack, then a long rolling rumble.
+        const dur = rnd(4, 7);
+        const crack = this.noiseSrc(false, t, 0.6);
+        const cf = ctx.createBiquadFilter();
+        cf.type = 'bandpass';
+        cf.frequency.value = rnd(700, 1400);
+        crack.connect(cf).connect(this.env(t, 0.01, vol * 0.25, 0.5)).connect(pan);
+        const rum = this.noiseSrc(true, t, dur);
+        const lf = ctx.createBiquadFilter();
+        lf.type = 'lowpass';
+        lf.frequency.setValueAtTime(260, t);
+        lf.frequency.exponentialRampToValueAtTime(70, t + dur);
+        const g = this.env(t + 0.05, rnd(0.2, 0.5), vol, dur - 0.6);
+        rum.connect(lf).connect(g).connect(pan);
+        break;
+      }
+      case 'bird': {
+        // A short phrase of chirps sweeping up.
+        const n = 2 + Math.floor(Math.random() * 4);
+        const base = rnd(2200, 3600);
+        for (let i = 0; i < n; i++) {
+          const at = t + i * rnd(0.09, 0.16);
+          const o = this.tone('sine', at, 0.09);
+          o.frequency.setValueAtTime(base * rnd(0.9, 1.05), at);
+          o.frequency.exponentialRampToValueAtTime(base * rnd(1.3, 1.6), at + 0.06);
+          o.connect(this.env(at, 0.008, vol, 0.07)).connect(pan);
+        }
+        break;
+      }
+      case 'cricket': {
+        const o = this.tone('sine', t, 0.5);
+        o.frequency.value = rnd(4200, 5200);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        const pulses = 3 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < pulses; i++) {
+          const at = t + i * 0.055;
+          g.gain.setValueAtTime(0, at);
+          g.gain.linearRampToValueAtTime(vol, at + 0.008);
+          g.gain.linearRampToValueAtTime(0, at + 0.03);
+        }
+        o.connect(g).connect(pan);
+        break;
+      }
+      case 'cicada': {
+        const dur = rnd(2, 4);
+        const o = this.tone('sawtooth', t, dur);
+        o.frequency.value = rnd(110, 160);
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = rnd(4000, 6000);
+        bp.Q.value = 4;
+        o.connect(bp).connect(this.env(t, dur * 0.4, vol, dur * 0.6, false)).connect(pan);
+        break;
+      }
+      case 'plip': {
+        // Stream bubble: a tiny sine whose pitch rises fast.
+        const o = this.tone('sine', t, 0.06);
+        const f = rnd(500, 1300);
+        o.frequency.setValueAtTime(f, t);
+        o.frequency.exponentialRampToValueAtTime(f * rnd(1.6, 2.4), t + 0.05);
+        o.connect(this.env(t, 0.004, vol, 0.05)).connect(pan);
+        break;
+      }
+      case 'drip': {
+        const o = this.tone('sine', t, 0.4);
+        const f = rnd(900, 2100);
+        o.frequency.setValueAtTime(f * 0.7, t);
+        o.frequency.exponentialRampToValueAtTime(f, t + 0.02);
+        o.frequency.exponentialRampToValueAtTime(f * 0.8, t + 0.3);
+        const g = this.env(t, 0.003, vol, 0.32);
+        o.connect(g).connect(pan);
+        // Extra-wet: caves ring.
+        const send = ctx.createGain();
+        send.gain.value = 1.5;
+        g.connect(send).connect(this.reverbIn);
+        break;
+      }
+      case 'hawk': {
+        // A distant raptor's scree: falling, with a fast vibrato.
+        for (let i = 0; i < 2; i++) {
+          const at = t + i * rnd(0.9, 1.4);
+          const dur = rnd(0.7, 1.0);
+          const o = this.tone('triangle', at, dur);
+          o.frequency.setValueAtTime(rnd(2300, 2700), at);
+          o.frequency.exponentialRampToValueAtTime(rnd(1500, 1800), at + dur);
+          const lfo = this.tone('sine', at, dur);
+          lfo.frequency.value = 11;
+          const depth = ctx.createGain();
+          depth.gain.value = 70;
+          lfo.connect(depth).connect(o.frequency);
+          o.connect(this.env(at, 0.05, vol, dur, false)).connect(pan);
+        }
+        break;
+      }
+      case 'gust':
+      case 'howl': {
+        const howl = kind === 'howl';
+        const dur = rnd(2.5, 5);
+        const src = this.noiseSrc(!howl, t, dur);
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.Q.value = howl ? 9 : 1.2;
+        const f0 = howl ? rnd(500, 800) : rnd(250, 400);
+        bp.frequency.setValueAtTime(f0, t);
+        bp.frequency.linearRampToValueAtTime(f0 * rnd(1.6, 2.4), t + dur * 0.5);
+        bp.frequency.linearRampToValueAtTime(f0 * 1.1, t + dur);
+        src.connect(bp).connect(this.env(t, dur * 0.45, vol * (howl ? 1.6 : 1), dur * 0.55, false)).connect(pan);
+        break;
+      }
+      case 'creak': {
+        const dur = rnd(0.5, 1.1);
+        const o = this.tone('sawtooth', t, dur);
+        o.frequency.setValueAtTime(rnd(60, 90), t);
+        o.frequency.linearRampToValueAtTime(rnd(90, 140), t + dur);
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = rnd(500, 900);
+        bp.Q.value = 6;
+        o.connect(bp).connect(this.env(t, 0.08, vol, dur, false)).connect(pan);
+        break;
+      }
+    }
+  }
+
+  /** A short musical sting (shrine lit, discovery), on top of whatever is playing. */
+  stinger(kind: 'shrine' | 'discovery' = 'discovery') {
+    if (!this.ctx || !this.loaded) return;
+    const t = this.ctx.currentTime + 0.05;
+    const L = this.musicBus;
+    this.note('zitherGliss', undefined, t, 0.45, L);
+    const line = kind === 'shrine' ? [0, 2, 4, 7] : [2, 4, 5];
+    line.forEach((d, i) => this.note('zither', deg(d), t + 0.35 + i * 0.22, 0.32 - i * 0.03, L));
+    if (kind === 'shrine') this.note('flute', deg(4), t + 1.3, 0.22, L, 1.6, 0.12);
   }
 
   // ---------------------------------------------------------------------------
@@ -311,6 +623,7 @@ export class Audio {
     const minGap = s === 'hit' || s === 'coin' || s === 'skitter' || s.startsWith('step') ? 0.05 : 0.03;
     if (now - (this.lastPlay.get(s) ?? -1) < minGap) return;
     this.lastPlay.set(s, now);
+    if (s === 'seal') this.stinger('shrine');
     for (const p of SFX[s]) {
       const when = now + (p.delay ?? 0);
       if ('set' in p) {
@@ -335,9 +648,12 @@ export class Audio {
 
   private schedule() {
     if (!this.ctx || this.ctx.state !== 'running') return;
-    const ahead = this.ctx.currentTime + 0.3;
+    const now = this.ctx.currentTime;
+    this.ambTick(now);
+    this.updateMode(now);
+    const ahead = now + 0.3;
     // After a long stall (tab hidden), skip ahead instead of firing a burst of notes.
-    if (this.nextStep < this.ctx.currentTime - 1) this.nextStep = this.ctx.currentTime + 0.05;
+    if (this.nextStep < now - 1) this.nextStep = now + 0.05;
     while (this.nextStep < ahead) {
       this.playStep(this.nextStep);
       this.nextStep += 60 / BPM[this.mode] / 4;
@@ -346,41 +662,106 @@ export class Audio {
     }
   }
 
-  private chooseMode(): Mode {
+  private wantMode(now: number): Mode {
     if (this.title) return 'title';
     if (this.boss) return 'boss';
-    if (this.mode === 'combat') return this.combatIntensity > 0.15 ? 'combat' : 'explore';
+    if (this.combatIntensity > 0.45) this.lastCombat = now;
+    if ((this.mode === 'combat' || this.mode === 'boss') && now - this.lastCombat < COMBAT_HOLD) return 'combat';
     return this.combatIntensity > 0.45 ? 'combat' : 'explore';
   }
 
-  private playStep(t: number) {
-    const L = this.musicBus;
-    const s = this.step;
-    if (s === 0) {
-      const next = this.chooseMode();
-      if (next !== this.mode) {
-        // Stinger on the downbeat of a new section.
-        if (next === 'combat' || next === 'boss') this.note('taiko', undefined, t, 0.9, L);
-        if (next === 'boss') this.note('gong', undefined, t, 0.8, L);
-        if (next === 'explore' && this.mode !== 'title') this.note('zitherGliss', undefined, t, 0.5, L);
-        this.mode = next;
-        this.bar = 0;
-      }
+  private fadeScore(to: number, secs: number, now: number) {
+    const g = this.scoreBus.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(to, now + secs);
+  }
+
+  /**
+   * Music sections. Entering a fight (or the boss, or the title) cuts in at once with a stinger and a quick
+   * fade-in; leaving one fades the score out over a few seconds, then exploring is ambience only, with a rare
+   * sparse zither phrase.
+   */
+  private updateMode(now: number) {
+    const want = this.wantMode(now);
+    const ducked = want === 'combat' || want === 'boss';
+    if (ducked !== this.ducked) {
+      this.ducked = ducked;
+      const g = this.ambDuck.gain;
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      g.linearRampToValueAtTime(ducked ? 0.55 : 1, now + 2);
     }
+    if (want === this.mode) {
+      if (this.fadingOut) {
+        // Back into the fight before the fade finished: bring the score back up.
+        this.fadingOut = false;
+        this.fadeScore(1, 0.8, now);
+      }
+      return;
+    }
+    if (want === 'explore') {
+      if (!this.fadingOut) {
+        this.fadingOut = true;
+        this.fadeEnd = now + 3.2;
+        this.fadeScore(0, 3.2, now);
+      } else if (now >= this.fadeEnd) {
+        this.fadingOut = false;
+        this.mode = 'explore';
+        this.bar = 0;
+        this.phraseBars = 0;
+        this.nextPhraseAt = now + rnd(40, 80);
+      }
+      return;
+    }
+    // Into title / combat / boss: start the section on the next sixteenth.
+    const from = this.mode;
+    this.fadingOut = false;
+    this.mode = want;
+    this.step = 0;
+    this.bar = 0;
+    this.nextStep = now + 0.06;
+    const t = this.nextStep;
+    if (want === 'combat' || want === 'boss') {
+      this.note('taiko', undefined, t, 0.9, this.musicBus);
+      if (want === 'boss' || from === 'explore') this.note('gong', undefined, t, want === 'boss' ? 0.8 : 0.4, this.musicBus);
+    }
+    this.fadeScore(1, from === 'explore' || from === 'title' ? 1.2 : 0.3, now);
+  }
+
+  private playStep(t: number) {
+    const L = this.scoreBus;
+    const s = this.step;
     const beat = 60 / BPM[this.mode];
     const root = ROOTS[this.bar % ROOTS.length];
     const m = this.mode;
 
-    if (m === 'title' || m === 'explore') {
+    if (m === 'explore') {
+      // Mostly silence: now and then a short, sparse zither phrase (sometimes with the xun) over the ambience.
+      if (s === 0) {
+        if (this.phraseBars > 0) this.phraseBars--;
+        else if (t >= this.nextPhraseAt && !this.fadingOut) {
+          this.phraseBars = 4;
+          this.nextPhraseAt = t + rnd(90, 170);
+          this.fadeScore(0.75, 1, this.ctx!.currentTime);
+          if (Math.random() < 0.5) this.playPhrase('flute', FLUTE[this.phrase++ % FLUTE.length], t + beat * 4, beat, 0.22, 0);
+        }
+      }
+      if (this.phraseBars > 0) {
+        if (s === 0 && this.bar % 2 === 0) this.note('zither', deg(root - 10), t, 0.4, L);
+        if (s % 4 === 0 && Math.random() < 0.7) this.note('zither', deg(root - 5 + ARP[(s / 2 + this.bar * 3) % 8]), t, 0.22 + Math.random() * 0.06, L);
+      }
+      return;
+    }
+    if (m === 'title') {
       // Zither: bass on the downbeat, a slow rising-falling arpeggio in eighths.
       if (s === 0) this.note('zither', deg(root - 10), t, 0.55, L);
       if (s % 2 === 0) this.note('zither', deg(root - 5 + ARP[s / 2]), t, (s === 0 ? 0.4 : 0.26) + Math.random() * 0.06, L);
       if (s === 0 && this.bar % 4 === 0) this.note('cymbal', undefined, t, 0.35, L);
       if (s === 0 && this.bar % 16 === 0) this.note('gong', undefined, t, 0.35, L);
-      if (m === 'explore' && (s === 0 || s === 8) && this.bar % 2 === 1) this.note('drumLow', undefined, t, s === 0 ? 0.4 : 0.25, L);
       // Xun flute phrases every other four bars.
       if (s === 0 && this.bar % 8 === 4) this.playPhrase('flute', FLUTE[this.phrase++ % FLUTE.length], t, beat, 0.32, 0);
-      if (m === 'title' && s === 0 && this.bar % 8 === 0) this.note('zitherTrem', deg(root - 5), t, 0.3, L, beat * 3.5, 0.3);
+      if (s === 0 && this.bar % 8 === 0) this.note('zitherTrem', deg(root - 5), t, 0.3, L, beat * 3.5, 0.3);
     } else {
       const boss = m === 'boss';
       // Taiko groove with frame drums and woodblock.
@@ -407,7 +788,7 @@ export class Audio {
       const dur = beats * beat;
       if (d !== null) {
         const midi = deg(d + shift);
-        const v = this.note(inst, midi, at, vol, this.musicBus, dur * 0.95, inst === 'erhu' ? 0.06 : 0.09);
+        const v = this.note(inst, midi, at, vol, this.scoreBus, dur * 0.95, inst === 'erhu' ? 0.06 : 0.09);
         // Erhu slides into each note from the previous one (portamento).
         if (v && inst === 'erhu' && this.lastErhuMidi && Math.abs(this.lastErhuMidi - midi) <= 5) {
           v.src.playbackRate.setValueAtTime(v.rate * 2 ** ((this.lastErhuMidi - midi) / 12), at);

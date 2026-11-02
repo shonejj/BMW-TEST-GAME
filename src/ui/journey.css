@@ -1,0 +1,86 @@
+/* Track D: stance HUD, skill-tree node kinds, item compare, curios/gourd tab, shrine offerings, journal. */
+
+.stance-hud {
+  position: absolute; z-index: 6; display: none; pointer-events: none;
+  top: calc(96px + var(--safe-t, 0px)); left: calc(12px + var(--safe-l, 0px));
+  font: 600 10px var(--display); color: #e8dcc0; text-shadow: 0 1px 2px #000; letter-spacing: 0.06em;
+}
+.stance-hud.on { display: block; }
+.sh-row { display: flex; gap: 4px; align-items: center; }
+.sh-badge {
+  pointer-events: auto; display: flex; align-items: center; gap: 4px; padding: 2px 7px 2px 4px; cursor: pointer;
+  background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 2px;
+  color: #9a907e; font: inherit; letter-spacing: 0.08em;
+}
+.sh-badge i { width: 9px; height: 9px; transform: rotate(45deg); border: 1px solid var(--sc); background: transparent; }
+.sh-badge.active { color: #fff4dc; border-color: var(--sc); box-shadow: 0 0 8px color-mix(in srgb, var(--sc) 55%, transparent); }
+.sh-badge.active i { background: var(--sc); }
+.sh-badge.locked { opacity: 0.35; }
+.sh-key { font: 700 9px var(--display); color: #2a1e10; background: #d8c9a4; border-radius: 2px; padding: 1px 4px; margin-left: 2px; }
+.sh-key:empty { display: none; }
+.sh-pips { display: flex; gap: 4px; margin: 5px 0 0 3px; }
+.sh-pips i { width: 14px; height: 3px; background: rgba(255, 255, 255, 0.15); }
+.sh-pips i.done { background: var(--sc); }
+.sh-pips i.next { background: color-mix(in srgb, var(--sc) 45%, #000); }
+.sh-special { margin-top: 4px; color: #a89c84; }
+.sh-special.ready { color: var(--sc); }
+.sh-buffs { margin-top: 3px; color: #9ad8ff; }
+.sh-will { margin-top: 3px; color: #9ad8ff; }
+.sh-special:empty, .sh-buffs:empty, .sh-will:empty { display: none; }
+.loot-label.will-label { background: rgba(10, 30, 50, 0.7); }
+
+/* Skill tree: seven branches, node kinds coloured */
+.talent-tree.tree7 { grid-template-columns: repeat(7, minmax(64px, 1fr)); gap: 4px; }
+.talent-tree.tree7 .tn-gem { width: 36px; height: 36px; }
+.talent-tree.tree7 .tn-name { font-size: 10px; }
+.talent-tree.tree7 .nodes { gap: 8px; }
+.tnode.k-stance .tn-gem { border-color: rgba(122, 208, 255, 0.7); }
+.tnode.k-combo .tn-gem { border-color: rgba(156, 255, 138, 0.6); }
+.tnode.k-special .tn-gem { border-color: rgba(255, 120, 90, 0.75); }
+.tnode.k-spell .tn-gem { border-color: rgba(200, 140, 255, 0.7); }
+.tnode.k-passive .tn-gem { border-color: rgba(255, 212, 106, 0.7); }
+.tnode .tn-kind { font: 400 8px var(--display); letter-spacing: 0.12em; color: #8a806e; text-transform: uppercase; }
+.td-kind { font: 600 10px var(--display); letter-spacing: 0.2em; color: var(--gold); text-transform: uppercase; margin-bottom: 4px; }
+.stance-card { margin-top: 10px; padding: 8px 10px; border-left: 2px solid var(--sc); background: rgba(0, 0, 0, 0.3); font-size: 12px; color: #d8cfbc; }
+.stance-card b { color: var(--sc); font-family: var(--display); letter-spacing: 0.1em; }
+
+/* Item details: trade-offs and compare */
+.dc-trait { font: italic 12px var(--display); color: #c8b89a; margin: 2px 0 6px; }
+.dc-stats li.good { color: #8affa0; }
+.dc-stats li.bad { color: #ff7a6a; }
+.dc-stats li.implicit::before { content: '◆ '; font-size: 9px; opacity: 0.7; }
+.dc-set { margin-top: 6px; padding: 6px 8px; border: 1px solid rgba(94, 240, 138, 0.35); background: rgba(10, 40, 20, 0.35); font-size: 12px; }
+.dc-set h4 { margin: 0 0 3px; color: #5ef08a; font: 700 11px var(--display); letter-spacing: 0.12em; }
+.dc-set p { margin: 1px 0; color: #9a907e; }
+.dc-set p.on { color: #c8ffd4; }
+.dc-diff { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.1); font-size: 12px; }
+.dc-diff h4 { margin: 0 0 3px; font: 700 10px var(--display); letter-spacing: 0.15em; color: #a89c84; }
+.dc-diff span { display: inline-block; margin: 1px 8px 1px 0; }
+.dc-diff .up { color: #8affa0; }
+.dc-diff .down { color: #ff7a6a; }
+.dc-plus { color: #ffe3a0; }
+.item-card .plus { position: absolute; top: 2px; left: 3px; font: 700 10px var(--display); color: #ffe3a0; text-shadow: 0 1px 2px #000; }
+.item-card.set { box-shadow: inset 0 0 0 1px #5ef08a; }
+
+/* Curios & gourd tab, shrine offerings, journal */
+.cg-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.cg-layout h3 { font: 700 12px var(--display); letter-spacing: 0.2em; color: var(--gold); margin: 10px 0 6px; }
+.cg-slots { display: flex; gap: 6px; flex-wrap: wrap; }
+.cg-slot, .cg-card {
+  display: block; width: 100%; text-align: left; cursor: pointer; padding: 6px 8px; margin-bottom: 4px;
+  background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(226, 178, 90, 0.2); color: #d8cfbc; font: 12px/1.35 var(--body, inherit);
+}
+.cg-slot { width: auto; flex: 1; min-width: 110px; }
+.cg-slot.active, .cg-card.on { border-color: var(--gold-hot, #ffd46a); background: rgba(80, 56, 16, 0.4); }
+.cg-slot.locked, .cg-card.locked { opacity: 0.4; }
+.cg-card b, .cg-slot b { display: block; font: 700 12px var(--display); color: #f4e6c8; letter-spacing: 0.05em; }
+.cg-card small, .cg-slot small { color: #a89c84; }
+.cg-card:focus, .cg-card:hover, .cg-slot:focus, .cg-slot:hover { outline: none; border-color: #fff1d2; }
+.cg-card em { display: block; color: #8a806e; font-size: 11px; margin-top: 2px; }
+.cg-meta { color: #a89c84; font-size: 12px; margin: 4px 0; }
+.cg-meta b { color: #ffe3a0; }
+.shrine-note { padding: 6px 8px; margin: 4px 0 8px; font-size: 12px; color: #c8b89a; border-left: 2px solid var(--gold); background: rgba(0, 0, 0, 0.3); }
+.shrine-note.off { border-color: #6a5a4a; color: #8a806e; }
+.j-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.j-page .lore-text { font: italic 14px/1.55 Georgia, serif; color: #e8dcc0; }
+.j-page .relic { color: #ffd46a; }
