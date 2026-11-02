@@ -4,8 +4,10 @@ import { Animator } from './animator';
 import { buildHero, type HeroRig } from './outfits';
 import { COLORS, Trail, makeBlob } from './vfx';
 import type { Game } from './game';
-import type { Inventory, Power, StatKey } from './loot';
+import { itemStats, setCounts, SETS, type Inventory, type Power, type SetId, type StatKey } from './loot';
 import { DEFAULT_SPELLS, SPELLS, rank, type SpellDef, type SpellId, type Talents } from './progression';
+import { SPECIAL_MOVES, STANCES, STANCE_IDS, STING_COUNT, STING_STEP, hitAt, move, type ComboHit, type Move, type StanceId } from './stances';
+import { DRINKS, gourdLevelCharges, gourdLevelHeal } from './items';
 
 export interface Stats {
   maxHp: number;
@@ -28,30 +30,27 @@ export interface Stats {
   transformTime: number;
   powers: Set<Power>;
   resonance: boolean;
+  /** Critical hit damage multiplier. */
+  critMult: number;
+  /** Dodge cooldown modifier (negative = faster recovery). */
+  dodgeCd: number;
+  /** Multiplier on damage taken. */
+  damageTaken: number;
+  /** Heavy charge rate multiplier. */
+  chargeRate: number;
+  /** Seconds after a roll starts in which a hit counts as a perfect dodge. */
+  perfectWindow: number;
+  /** Four-piece set bonuses that are active. */
+  sets: Set<SetId>;
 }
 
 // ---------------------------------------------------------------------------
-// Moves: windows of motion-captured clips (seconds), and the frame each one connects
+// Moves: windows of motion-captured clips (seconds), and the frame each one connects. Light combos,
+// heavies and specials per stance live in stances.ts.
 // ---------------------------------------------------------------------------
 
-interface Move { clip: string; from: number; to: number; hit: number }
-const move = (clip: string, from: number, to: number, hit = to): Move => ({ clip, from, to, hit });
-/** Fraction of a move's window at which its hit lands. */
-const hitAt = (m: Move) => (m.hit - m.from) / (m.to - m.from);
-
-/** Light combo: forehand swing, backhand swing, low spinning sweep, heavy horizontal finisher. */
-interface ComboHit { move: Move; rate: number; range: number; arc: number; mult: number; knock: number; lunge: number }
-const COMBO: ComboHit[] = [
-  { move: move('combo1', 0.02, 0.37, 0.19), rate: 1.0, range: 3.3, arc: 1.35, mult: 1.0, knock: 0.6, lunge: 2.4 },
-  { move: move('combo2', 0.0, 0.43, 0.24), rate: 1.05, range: 3.3, arc: 1.35, mult: 1.1, knock: 0.6, lunge: 2.4 },
-  { move: move('combo3', 0.1, 0.87, 0.47), rate: 1.3, range: 3.7, arc: Math.PI, mult: 1.3, knock: 1.4, lunge: 1.2 },
-  { move: move('heavyA', 0.02, 0.73, 0.47), rate: 1.1, range: 3.9, arc: 1.5, mult: 2.1, knock: 2.6, lunge: 3.2 },
-];
 const comboDur = (c: ComboHit) => (c.move.to - c.move.from) / c.rate;
 
-/** Charged heavy: crouched wind-up held while charging, then a leaping two-handed slam. */
-const CHARGE_POSE = 0.04;
-const HEAVY = move('groundPound', 0.06, 0.95, 0.3);
 const ROLL = move('roll', 0.1, 1.02);
 const DRINK = move('drink', 0.3, 2.65, 1.0);
 const CAST = move('cast', 0.0, 0.5, 0.25);
@@ -63,7 +62,8 @@ const TRANSFORM = move('transform', 0.0, 2.1, 0.75);
 const DEATH = move('death', 0.0, 2.35);
 const HURT = move('hit', 0.0, 0.33);
 
-type State = 'free' | 'attack' | 'charge' | 'heavy' | 'dodge' | 'cast' | 'flame' | 'slam' | 'gale' | 'drink' | 'transform' | 'dead';
+type State = 'free' | 'attack' | 'charge' | 'heavy' | 'special' | 'dodge' | 'cast' | 'flame' | 'slam' | 'gale' | 'drink' | 'transform' | 'dead';
+type Special = 'resolute' | 'sweep' | 'sting';
 
 export const BASE_TRANSFORM_DURATION = 15;
 
@@ -95,6 +95,23 @@ export class Player {
   /** Current heavy charge level (0–3) while charging, for the HUD. */
   chargeLevel = 0;
   ringFire: { pos: THREE.Vector3; r: number; t: number } | null = null;
+  /** Staff stance: its own light chain, heavy and special. */
+  stance: StanceId = 'smash';
+  /** Cooldown left on the stance special (s). */
+  specialCd = 0;
+  /** Index of the current hit in the light chain (for the HUD). */
+  get comboIndex() {
+    return this.combo;
+  }
+  /** Last time (game time) a perfect dodge happened. */
+  private lastPerfect = -99;
+  private special: Special = 'resolute';
+  private specialHits = 0;
+  private followUp = false;
+  private heavyFrom = new THREE.Vector3();
+  private heavyStance: StanceId = 'smash';
+  private lungeLeft = 0;
+  private lungeTotal = 0;
 
   private st = 0;
   private dur = 1;
@@ -167,8 +184,48 @@ export class Player {
     return this.spellDef(slot).cd * (1 - this.stats.cdr);
   }
 
+  /** Stances the player knows (Smash from the start, the others from the skill tree). */
+  knowsStance(id: StanceId) {
+    const u = STANCES[id].unlock;
+    return !u || rank(this.talents, u) > 0;
+  }
+  /** The current stance's light chain, with the fifth strike once learned. */
+  chain(): ComboHit[] {
+    const st = STANCES[this.stance];
+    return rank(this.talents, st.extTalent) > 0 ? [...st.chain, st.ext] : st.chain;
+  }
+  get specialKnown() {
+    return rank(this.talents, STANCES[this.stance].specialTalent) > 0;
+  }
+  get canTransform() {
+    return rank(this.talents, 'sageForm') > 0;
+  }
+
+  /** Switches to the next known stance (or `to`). */
+  cycleStance(to?: StanceId) {
+    const known = STANCE_IDS.filter((id) => this.knowsStance(id));
+    if (!to) {
+      if (known.length < 2) {
+        this.game.hud.toast('Learn Pillar or Thrust Stance in Self-Advance', '#c8b89a');
+        return;
+      }
+      to = known[(known.indexOf(this.stance) + 1) % known.length];
+    }
+    if (!this.knowsStance(to) || to === this.stance) return;
+    this.stance = to;
+    this.combo = 0;
+    this.comboReset = 0;
+    const col = new THREE.Color(STANCES[to].color).getHex();
+    this.game.vfx.shockwave(this.pos, 2.2, col, 0.35);
+    this.game.vfx.twinkle(this.pos, 1, 5, col);
+    this.game.audio.play('focus');
+    this.game.hud.floatText(this.pos, `${STANCES[to].name} Stance`, 'focus-pop', 0.9);
+    if (this.state === 'attack') this.setState('free');
+  }
+
   computeStats(inv: Inventory): Stats {
     const t = this.talents;
+    const j = this.game.journey;
     const s: Stats = {
       maxHp: 180 + this.level * 30 + rank(t, 'vitality') * 30,
       maxMana: 100,
@@ -190,15 +247,58 @@ export class Player {
       transformTime: BASE_TRANSFORM_DURATION + rank(t, 'longForm') * 3,
       powers: new Set(),
       resonance: rank(t, 'resonance') > 0,
+      critMult: 2,
+      dodgeCd: 0,
+      damageTaken: 1,
+      chargeRate: 1,
+      perfectWindow: 0.24,
+      sets: new Set(),
+    };
+    let gourdBonus = 0;
+    const add = (k: StatKey, v: number) => {
+      if (k === 'hp') s.maxHp += v;
+      else if (k === 'gourdHeal') gourdBonus += v;
+      else s[k] += v;
     };
     for (const it of Object.values(inv.equipped)) {
       if (!it) continue;
-      for (const [k, v] of Object.entries(it.stats) as [StatKey, number][]) {
-        if (k === 'hp') s.maxHp += v;
-        else s[k] += v;
-      }
+      for (const [k, v] of Object.entries(itemStats(it)) as [StatKey, number][]) add(k, v);
       if (it.power) s.powers.add(it.power);
     }
+    for (const [id, n] of Object.entries(setCounts(inv.equipped)) as [SetId, number][]) {
+      if (n >= 2) for (const [k, v] of Object.entries(SETS[id].twoStats) as [StatKey, number][]) add(k, v);
+      if (n >= 4) s.sets.add(id);
+    }
+    // Journey: relics, curios, gourd, medicines.
+    let hpMult = 1;
+    if (j) {
+      const relics = j.s.relics;
+      if (relics.includes('emberEye')) s.crit += 0.05;
+      if (relics.includes('windEar')) s.perfectWindow = 0.34;
+      if (relics.includes('unbendingHeart')) hpMult *= 1.1;
+      if (j.has('goldBand')) { s.furyGain *= 1.4; hpMult *= 0.9; }
+      if (j.has('windPearl')) { s.moveSpeed += 0.08; s.chargeRate *= 1.2; }
+      if (j.has('bronzeMirror')) { s.critMult = 2.5; s.crit -= 0.05; }
+      if (j.has('crowFeather')) s.dodgeCd -= 0.25;
+      if (j.has('tigerFang')) s.focusGain *= 1.3;
+      if (j.buff('clearMind')) s.focusGain *= 2;
+      if (j.buff('tigerPill')) s.damagePct += 0.2;
+      if (j.buff('fireWine')) s.damagePct += 0.15;
+      if (j.buff('gojiBerry')) s.damagePct += 0.1;
+      if (j.buff('ironPill')) s.armor += 40;
+      if (j.buff('boneSnow')) s.damageTaken *= 0.8;
+      s.gourdCharges += gourdLevelCharges(j.s.gourdLevel);
+      gourdBonus += gourdLevelHeal(j.s.gourdLevel);
+      s.gourdHeal = DRINKS[j.s.drink].heal * (1 + rank(t, 'gourdPotency') * 0.1 + gourdBonus);
+    }
+    s.maxHp = Math.max(50, Math.round(s.maxHp * hpMult));
+    s.maxMana = Math.max(40, s.maxMana);
+    s.crit = Math.max(0, s.crit);
+    s.attackSpeed = Math.max(-0.4, s.attackSpeed);
+    s.moveSpeed = Math.max(-0.4, s.moveSpeed);
+    s.dodgeCd = Math.max(-0.6, s.dodgeCd);
+    s.manaRegen = Math.max(-4, s.manaRegen);
+    s.focusGain = Math.max(0.2, s.focusGain);
     if (s.powers.has('furyGain')) s.furyGain *= 1.6;
     s.cdr = Math.min(s.cdr, 0.5);
     this.stats = s;
@@ -227,6 +327,8 @@ export class Player {
     this.ringFire = null;
     this.cooldowns = [0, 0, 0, 0];
     this.focus = 0;
+    this.specialCd = 0;
+    this.chargeLevel = 0;
     this.yaw = Math.PI;
     this.applyTransformLook(false);
     this.root.rotation.set(0, this.yaw, 0);
@@ -249,30 +351,70 @@ export class Player {
   // Damage
   // -------------------------------------------------------------------------
 
+  /** Extra crit chance for the blow being rolled (set around strikes by stance moves). */
+  private critBonus = 0;
+  /** Forces the next rolls to crit (Resolute Strike after a perfect dodge). */
+  private forceCrit = false;
+
   rollDamage(mult: number, skill: boolean) {
     const s = this.stats;
-    const crit = Math.random() < s.crit + (this.transformed ? 0.1 : 0);
+    const crit = this.forceCrit || Math.random() < s.crit + this.critBonus + (this.transformed ? 0.1 : 0);
     let d = s.damage * (1 + s.damagePct) * mult * (skill ? 1 + s.skillDamage : 1);
     if (this.transformed) d *= 1.8;
-    if (crit) d *= 2;
+    if (this.game.journey.has('ironBead') && this.hp > s.maxHp * 0.8) d *= 1.15;
+    if (crit) {
+      d *= s.critMult;
+      if (s.sets.has('blackfeather') && !skill) {
+        this.focus = Math.min(3, this.focus + 0.12);
+        this.fury = Math.min(100, this.fury + 2);
+      }
+    }
     d *= 0.9 + Math.random() * 0.2;
     return { amount: Math.max(1, Math.round(d)), crit };
+  }
+
+  /** Strikes with extra crit chance (stance moves). */
+  private strikeWith(o: Parameters<Game['strike']>[0], critBonus = 0) {
+    this.critBonus = critBonus;
+    const n = this.game.strike(o);
+    this.critBonus = 0;
+    return n;
+  }
+
+  /** True while a guarded move is under way (Pillar charge, Sweeping Pillar): less damage, no flinch. */
+  private get guarded() {
+    return (this.state === 'charge' && this.stance === 'pillar') || (this.state === 'special' && this.special === 'sweep');
+  }
+
+  /** Called by the game when a foe dies. */
+  onKill() {
+    const s = this.stats;
+    if (this.game.journey.has('boneBell')) this.heal(s.maxHp * 0.02);
+    if (s.sets.has('paleBone')) this.heal(s.maxHp * 0.03);
   }
 
   /** Called by the game when an enemy hits us. Returns damage actually taken. */
   hurt(amount: number, from?: THREE.Vector3) {
     if (!this.alive) return 0;
     // Perfect dodge: getting "hit" in the first moments of a roll.
-    if (this.state === 'dodge' && this.st < 0.24 && !this.perfectUsed) {
+    if (this.state === 'dodge' && this.st < this.stats.perfectWindow && !this.perfectUsed) {
       this.perfectUsed = true;
       this.focus = Math.min(3, this.focus + 1);
+      this.lastPerfect = this.game.time;
+      const s = this.stats;
+      if (this.game.journey.has('lotusSeed')) this.heal(s.maxHp * 0.06);
+      if (s.sets.has('pilgrim')) {
+        this.heal(s.maxHp * 0.06);
+        this.mana = Math.min(s.maxMana, this.mana + 15);
+      }
       this.game.onPerfectDodge();
       return 0;
     }
     if (this.invuln > 0) return 0;
-    let mult = this.transformed ? 0.6 : 1;
+    let mult = (this.transformed ? 0.6 : 1) * this.stats.damageTaken;
     if (this.ringFire && this.pos.distanceTo(this.ringFire.pos) < this.ringFire.r) mult *= 0.7;
-    const reduced = Math.max(1, Math.round(amount * (100 / (100 + this.stats.armor * 1.2)) * mult));
+    if (this.guarded) mult *= 0.6;
+    const reduced = Math.max(1, Math.round(amount * (100 / (100 + Math.max(0, this.stats.armor) * 1.2)) * mult));
     this.hp -= reduced;
     this.hurtFlash = 0.25;
     if (this.state === 'free') this.hurtT = HURT.to - HURT.from;
@@ -281,7 +423,7 @@ export class Player {
     this.game.hud.damageFlash();
     this.game.rumble(0.35, 120);
     if (this.settingsNumbers()) this.game.hud.floatText(this.pos, `-${reduced}`, 'dmg player', 0.8);
-    if (from && (this.state === 'free' || this.state === 'drink')) {
+    if (from && !this.guarded && (this.state === 'free' || this.state === 'drink')) {
       this.tmp.subVectors(this.pos, from).setY(0).normalize().multiplyScalar(0.35);
       this.game.level.move(this.pos, this.tmp.x, this.tmp.z, this.radius);
     }
@@ -376,6 +518,7 @@ export class Player {
     const s = this.stats;
     for (let i = 0; i < 4; i++) this.cooldowns[i] = Math.max(0, this.cooldowns[i] - dt);
     this.dodgeCd = Math.max(0, this.dodgeCd - dt);
+    this.specialCd = Math.max(0, this.specialCd - dt);
     this.invuln = Math.max(0, this.invuln - dt);
     this.slowTime = Math.max(0, this.slowTime - dt);
     this.hurtT = Math.max(0, this.hurtT - dt);
@@ -412,6 +555,7 @@ export class Player {
     if (this.alive && this.state !== 'dodge' && this.state !== 'transform' && this.state !== 'slam' && input.consume('dodge')) {
       if (this.startDodge(mx, mz)) return this.finish(dt);
     }
+    if (this.alive && (this.state === 'free' || this.state === 'attack') && input.consume('stance')) this.cycleStance();
 
     switch (this.state) {
       case 'free': {
@@ -424,18 +568,24 @@ export class Player {
         break;
       }
       case 'attack': {
-        const c = COMBO[this.combo];
-        if (k < hitAt(c.move)) this.game.level.move(this.pos, Math.sin(this.yaw) * c.lunge * dt / this.dur * 0.4, Math.cos(this.yaw) * c.lunge * dt / this.dur * 0.4, this.radius);
-        if (!this.hitDone && k >= hitAt(c.move)) {
-          this.hitDone = true;
-          this.doComboHit(this.combo);
+        const chain = this.chain();
+        const c = chain[Math.min(this.combo, chain.length - 1)];
+        const at = hitAt(c.move);
+        if (k < at && this.lungeLeft > 0) {
+          const step = Math.min(this.lungeLeft, (c.lunge * dt) / (this.dur * at));
+          this.lungeLeft -= step;
+          if (!this.targetInReach(1.1)) this.game.level.move(this.pos, Math.sin(this.yaw) * step, Math.cos(this.yaw) * step, this.radius);
         }
-        this.trail.active = k > hitAt(c.move) - 0.25 && k < hitAt(c.move) + 0.2;
+        if (!this.hitDone && k >= at) {
+          this.hitDone = true;
+          this.doComboHit(c, this.combo === chain.length - 1);
+        }
+        this.trail.active = k > at - 0.25 && k < at + 0.2;
         if (input.attackHeld && k > 0.4) this.queued = true;
-        if (canAct && input.heavyHeld) { this.startCharge(); break; }
+        if (canAct && input.heavyHeld) { this.startCharge(true); break; }
         if (canAct && this.tryCast()) break;
         if (k >= 1) {
-          const next = (this.combo + 1) % COMBO.length;
+          const next = (this.combo + 1) % chain.length;
           this.comboReset = 0.5;
           this.trail.active = false;
           if (this.queued || input.attackHeld) {
@@ -450,7 +600,7 @@ export class Player {
         break;
       }
       case 'charge': {
-        this.chargeT += dt * (1 + rank(this.talents, 'heavyMastery') * 0.1);
+        this.chargeT += dt * s.chargeRate * (1 + (this.stance === 'smash' ? rank(this.talents, 'heavyMastery') * 0.1 : 0));
         this.yaw = approachAngle(this.yaw, this.aimYaw(mx, mz), dt * 6);
         const lvl = Math.min(3, Math.floor(this.chargeT / 0.45));
         if (lvl > this.chargeLevel) {
@@ -468,22 +618,41 @@ export class Player {
         break;
       }
       case 'heavy': {
-        const at = hitAt(HEAVY);
-        if (k < at) this.game.level.move(this.pos, Math.sin(this.yaw) * 4 * dt, Math.cos(this.yaw) * 4 * dt, this.radius);
+        const hm = STANCES[this.heavyStance].heavy;
+        const at = hitAt(hm);
+        if (this.heavyStance === 'thrust') {
+          // Lunge: cover the distance before the blow, untouchable while flying through the line.
+          if (k < at && this.lungeLeft > 0) {
+            const step = Math.min(this.lungeLeft, (this.lungeTotal * dt) / (this.dur * at));
+            this.lungeLeft -= step;
+            this.game.level.move(this.pos, Math.sin(this.yaw) * step, Math.cos(this.yaw) * step, this.radius);
+            this.invuln = Math.max(this.invuln, 0.05);
+            if (Math.random() < 0.6) this.game.vfx.dustBurst(this.pos, 2, 0.4);
+          }
+        } else if (this.heavyStance === 'smash' && k < at) {
+          this.game.level.move(this.pos, Math.sin(this.yaw) * 4 * dt, Math.cos(this.yaw) * 4 * dt, this.radius);
+        }
         this.trail.active = k > at - 0.22 && k < at + 0.12;
         if (!this.hitDone && k >= at) {
           this.hitDone = true;
-          this.doHeavyImpact();
+          if (this.heavyStance === 'smash') this.doHeavyImpact();
+          else if (this.heavyStance === 'pillar') this.doPillarCrash();
+          else this.doThrustLunge();
         }
         if (k >= 1) { this.trail.active = false; this.setState('free'); }
+        this.speedNow = 0;
+        break;
+      }
+      case 'special': {
+        this.updateSpecial(dt, k, mx, mz);
         this.speedNow = 0;
         break;
       }
       case 'dodge': {
         // The tail of a roll cancels straight into an attack, so dodge-and-counter feels instant.
         if (k > 0.6 && input.attackHeld) { this.startAttack(mx, mz); break; }
-        if (k > 0.6 && input.heavyHeld) { this.startCharge(); break; }
-        const sp = 18 * (1 - k) + 3;
+        if (k > 0.45 && input.heavyHeld) { this.startCharge(true); break; }
+        const sp = (18 * (1 - k) + 3) * (this.game.journey.has('crowFeather') ? 1.15 : 1);
         this.game.level.move(this.pos, this.dodgeDir.x * sp * dt, this.dodgeDir.y * sp * dt, this.radius);
         if (s.powers.has('fireTrail')) {
           this.fireTrailTimer -= dt;
@@ -500,7 +669,9 @@ export class Player {
         this.showGourd(k > 0.06 && k < 0.92);
         if (!this.hitDone && k >= hitAt(DRINK)) {
           this.hitDone = true;
-          this.healLeft = s.maxHp * s.gourdHeal;
+          if (DRINKS[this.game.journey.s.drink].regen) this.healLeft = s.maxHp * s.gourdHeal;
+          else this.heal(s.maxHp * s.gourdHeal);
+          this.game.journey.onDrink();
           this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 1, this.pos.z, { count: 24, radius: 0.8, speed: [0.3, 1.2], up: [1, 3], gravity: -1, life: [0.6, 1.2], color: 0x8affb0, color2: 0xfff2b0 });
           this.game.audio.play('drink');
         }
@@ -629,15 +800,31 @@ export class Player {
   }
 
   private startAttack(mx: number, mz: number, chained = false) {
+    const chain = this.chain();
     if (!chained) this.combo = this.comboReset > 0 ? this.combo : 0;
-    const c = COMBO[this.combo];
+    if (this.combo >= chain.length) this.combo = 0;
+    const c = chain[this.combo];
     const atkSpeed = 1 + this.stats.attackSpeed + (this.transformed ? 0.3 : 0);
     this.setState('attack', c.move, comboDur(c) / atkSpeed);
+    this.lungeLeft = c.lunge;
     this.yaw = this.aimYaw(mx, mz);
   }
 
-  private startCharge() {
+  /** True when the auto-aim target (or any foe in front) is already within `d` of our reach. */
+  private targetInReach(d: number) {
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    for (const e of this.game.targets()) {
+      const dx = e.pos.x - this.pos.x, dz = e.pos.z - this.pos.z;
+      const along = dx * fx + dz * fz;
+      if (along > 0 && along < d + e.radius + this.radius && Math.abs(dx * fz - dz * fx) < e.radius + 0.6) return true;
+    }
+    return false;
+  }
+
+  /** `followUp`: started from a combo or a roll, so a quick tap becomes the stance special. */
+  private startCharge(followUp = false) {
     this.setState('charge');
+    this.followUp = followUp;
     this.chargeT = 0;
     this.chargeLevel = 0;
     this.trail.active = false;
@@ -645,18 +832,110 @@ export class Player {
   }
 
   private releaseHeavy() {
-    this.heavyLevel = this.chargeLevel;
     const tap = this.chargeT < 0.2;
-    this.setState('heavy', HEAVY, (HEAVY.to - HEAVY.from) / (tap ? 1.5 : 1.25));
+    if (tap && this.followUp && this.specialKnown && this.specialCd <= 0) {
+      this.chargeLevel = 0;
+      this.startSpecial();
+      return;
+    }
+    this.heavyLevel = this.chargeLevel;
+    this.heavyStance = this.stance;
+    const hm = STANCES[this.stance].heavy;
+    const rate = this.stance === 'smash' ? (tap ? 1.5 : 1.25) : this.stance === 'pillar' ? (tap ? 1.3 : 1.1) : (tap ? 1.4 : 1.2);
+    this.setState('heavy', hm, (hm.to - hm.from) / rate);
+    this.heavyFrom.copy(this.pos);
+    if (this.stance === 'thrust') {
+      this.lungeTotal = this.lungeLeft = 2.6 + this.heavyLevel * 1.6 + rank(this.talents, 'thrustMastery') * 1.5;
+      this.game.vfx.dustBurst(this.pos, 8, 0.6);
+    }
     this.chargeLevel = 0;
     this.game.audio.play('swingHeavy');
+  }
+
+  private startSpecial() {
+    const sp: Special = this.stance === 'smash' ? 'resolute' : this.stance === 'pillar' ? 'sweep' : 'sting';
+    this.special = sp;
+    this.specialHits = 0;
+    this.specialCd = STANCES[this.stance].specialCd;
+    this.yaw = this.aimYaw(this.game.input.moveX, this.game.input.moveY);
+    const atk = 1 + this.stats.attackSpeed * 0.5;
+    if (sp === 'resolute') {
+      this.setState('special', SPECIAL_MOVES.resolute, 0.62 / atk);
+      this.lungeLeft = 1.6;
+      this.forceCrit = this.game.time - this.lastPerfect < 1.5;
+    } else if (sp === 'sweep') {
+      this.setState('special', SPECIAL_MOVES.sweep, 0.7 / atk);
+    } else {
+      this.setState('special', SPECIAL_MOVES.sting, (STING_COUNT * STING_STEP + 0.25) / atk);
+    }
+    const col = new THREE.Color(STANCES[this.stance].color).getHex();
+    this.game.vfx.flash(this.tmp.set(this.pos.x, this.pos.y + 1, this.pos.z), 1.4, col, 0.12);
+    this.game.hud.floatText(this.pos, STANCES[this.stance].specialName, 'focus-pop', 0.8);
+    this.game.audio.play('swingHeavy');
+  }
+
+  private updateSpecial(dt: number, k: number, mx: number, mz: number) {
+    const col = new THREE.Color(STANCES[this.stance].color).getHex();
+    const m = this.move!;
+    if (this.special === 'sting') {
+      const step = STING_STEP / (1 + this.stats.attackSpeed * 0.5);
+      this.trail.active = true;
+      if (this.specialHits < STING_COUNT && this.st >= step * this.specialHits + 0.05) {
+        this.yaw = approachAngle(this.yaw, this.aimYaw(mx, mz), 0.6);
+        const last = this.specialHits === STING_COUNT - 1;
+        this.game.vfx.slash(this.pos, this.yaw + (Math.random() - 0.5) * 0.3, { radius: 4.6, arc: 0.3, tilt: (Math.random() - 0.5) * 0.6, colorA: col, colorB: COLORS.goldHot, dur: 0.16 });
+        const hits = this.strikeWith({ origin: this.pos, yaw: this.yaw, range: 4.6, halfArc: 0.42, mult: last ? 1.1 : 0.55, knock: last ? 2.2 : 0.3, skill: false, color: COLORS.goldHot, stagger: last, poise: 18, burn: this.stats.powers.has('burn') || this.transformed }, 0.1);
+        this.gainFocus(hits, hits > 0 ? 0.06 : 0);
+        this.game.audio.play('swing');
+        this.specialHits++;
+      }
+      if (k >= 1) { this.trail.active = false; this.setState('free'); }
+      return;
+    }
+    const at = hitAt(m);
+    if (this.special === 'resolute' && k < at && this.lungeLeft > 0) {
+      const step = Math.min(this.lungeLeft, (1.6 * dt) / (this.dur * at));
+      this.lungeLeft -= step;
+      if (!this.targetInReach(1.2)) this.game.level.move(this.pos, Math.sin(this.yaw) * step, Math.cos(this.yaw) * step, this.radius);
+    }
+    this.trail.active = k > at - 0.25 && k < at + 0.15;
+    if (!this.hitDone && k >= at) {
+      this.hitDone = true;
+      const hd = 1 + this.stats.heavyDamage;
+      if (this.special === 'resolute') {
+        const p = this.tmp2.set(this.pos.x + Math.sin(this.yaw) * 2, this.pos.y, this.pos.z + Math.cos(this.yaw) * 2).clone();
+        this.game.vfx.slash(this.pos, this.yaw, { radius: 3.4, reverse: true, tilt: Math.PI / 2, height: 1.3, colorA: col, colorB: COLORS.goldHot, dur: 0.3 });
+        this.game.vfx.shockwave(p, 3.2, col, 0.4, 0.16);
+        this.game.vfx.crack(p, 2.2, 2.5, true);
+        this.game.vfx.dustBurst(p, 12, 1.2);
+        const hits = this.game.strike({ origin: p, yaw: this.yaw, range: 2.9, halfArc: Math.PI, mult: 3 * hd, knock: 3, skill: false, color: COLORS.goldHot, stagger: true, poise: 70, burn: this.transformed });
+        if (hits > 0) {
+          this.focus = Math.min(3, this.focus + 1);
+          this.game.audio.play('focus');
+        }
+        this.forceCrit = false;
+        this.game.audio.play('heavyHit');
+        this.game.camRig.shake(0.45, 0.25);
+        this.game.hitstop(0.08);
+      } else {
+        this.game.vfx.slash(this.pos, this.yaw + Math.PI, { radius: 5.2, arc: Math.PI * 1.98, colorA: col, colorB: COLORS.goldHot, dur: 0.34, height: 0.8 });
+        this.game.vfx.shockwave(this.pos, 5.6, col, 0.45, 0.14);
+        this.game.vfx.dustBurst(this.pos, 18, 2.4);
+        this.game.strike({ origin: this.pos, yaw: 0, range: 5.2, halfArc: Math.PI, mult: 2.2 * hd, knock: 4.5, skill: false, color: COLORS.goldHot, stagger: true, poise: 80, burn: this.transformed });
+        this.game.audio.play('whirl');
+        this.game.camRig.shake(0.4, 0.25);
+      }
+      this.game.rumble(0.5, 140);
+    }
+    if (k >= 1) { this.trail.active = false; this.forceCrit = false; this.setState('free'); }
   }
 
   private startDodge(mx: number, mz: number) {
     if (this.dodgeCd > 0) return false;
     const swift = rank(this.talents, 'swiftness');
+    this.forceCrit = false;
     this.setState('dodge', ROLL, 0.44 - swift * 0.02);
-    this.dodgeCd = 0.5 * (1 - swift * 0.1);
+    this.dodgeCd = 0.5 * (1 - swift * 0.1) * (1 + this.stats.dodgeCd);
     this.perfectUsed = false;
     this.invuln = Math.max(this.invuln, 0.32);
     this.whirlTime = Math.min(this.whirlTime, 0.01);
@@ -678,13 +957,22 @@ export class Player {
       return;
     }
     this.gourd--;
-    this.setState('drink', DRINK, 1.25);
+    this.setState('drink', DRINK, 1.25 / DRINKS[this.game.journey.s.drink].speed);
+  }
+
+  /** Mana cost of a spell after set bonuses. */
+  spellMana(slot: number) {
+    return Math.round(this.spellDef(slot).mana * (this.stats.sets.has('paleBone') ? 0.7 : 1));
   }
 
   /** Checks spell / transform presses. Returns true if a cast started. */
   private tryCast(): boolean {
     const input = this.game.input;
     if (input.consume('transform')) {
+      if (!this.canTransform) {
+        this.game.hud.toast('Learn "Awaken the Sage" in Self-Advance to transform', '#c8b89a');
+        return false;
+      }
       if (this.fury >= 100 && !this.transformed) {
         this.setState('transform', TRANSFORM, 1.5);
         this.invuln = 1;
@@ -700,11 +988,12 @@ export class Player {
       if (!input.consume(`skill${i}` as 'skill0')) continue;
       const sk = this.spellDef(i);
       if (this.cooldowns[i] > 0) return false;
-      if (this.mana < sk.mana) {
+      const cost = this.spellMana(i);
+      if (this.mana < cost) {
         this.game.hud.toast('Not enough mana', '#6fb0ff');
         return false;
       }
-      this.mana -= sk.mana;
+      this.mana -= cost;
       this.cooldowns[i] = this.spellCooldown(i);
       this.castSkill(sk.id);
       return true;
@@ -765,7 +1054,7 @@ export class Player {
   private doCastImpact() {
     if (this.castSpell === 'immobilize') {
       const c = this.tmp.set(this.pos.x + Math.sin(this.yaw) * 2.5, this.pos.y, this.pos.z + Math.cos(this.yaw) * 2.5);
-      this.game.immobilize(c, 6.5, 3);
+      this.game.immobilize(c, 6.5, this.game.journey.has('goldRope') ? 4.5 : 3);
     } else {
       const c = this.pos.clone();
       this.ringFire = { pos: c, r: 5, t: 6 };
@@ -784,43 +1073,149 @@ export class Player {
     if (Math.floor(this.focus) > before) this.game.audio.play('focus');
   }
 
-  private doComboHit(i: number) {
-    const c = COMBO[i];
+  private doComboHit(c: ComboHit, last: boolean) {
     const t = this.transformed;
-    const colA = t ? COLORS.fire : COLORS.gold;
+    const stanceCol = new THREE.Color(STANCES[this.stance].color).getHex();
+    const colA = t ? COLORS.fire : this.stance === 'smash' ? COLORS.gold : stanceCol;
     const colB = t ? COLORS.fireHot : COLORS.goldHot;
     const range = c.range * (t ? 1.2 : 1);
+    const burn = this.stats.powers.has('burn') || t;
+    const crit = (c.crit ?? 0) + (this.stance === 'thrust' ? rank(this.talents, 'thrustMastery') * 0.04 : 0);
+    const base = { mult: c.mult, knock: c.knock, skill: false, color: colB, burn, stagger: c.stagger, poise: c.poise };
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
     let hits = 0;
-    if (i < 2) {
-      this.game.vfx.slash(this.pos, this.yaw, { radius: range, reverse: i === 1, tilt: i === 0 ? -0.15 : 0.15, colorA: colA, colorB: colB });
-      this.game.audio.play('swing');
-      hits = this.game.strike({ origin: this.pos, yaw: this.yaw, range, halfArc: c.arc, mult: c.mult, knock: c.knock, skill: false, color: colB, burn: this.stats.powers.has('burn') || t });
-    } else if (i === 2) {
-      this.game.vfx.slash(this.pos, this.yaw + Math.PI, { radius: range, arc: Math.PI * 1.98, colorA: colA, colorB: colB, dur: 0.3, height: 0.9 });
-      this.game.audio.play('whirl');
-      hits = this.game.strike({ origin: this.pos, yaw: 0, range, halfArc: Math.PI, mult: c.mult, knock: c.knock, skill: false, color: colB, burn: this.stats.powers.has('burn') || t });
-    } else {
-      this.game.vfx.slash(this.pos, this.yaw, { radius: range * 0.8, reverse: true, tilt: Math.PI / 2, height: 1.3, colorA: colA, colorB: colB, dur: 0.3 });
-      this.tmp.set(this.pos.x + Math.sin(this.yaw) * 2.2, this.pos.y, this.pos.z + Math.cos(this.yaw) * 2.2);
-      this.game.vfx.shockwave(this.tmp, 2.8, colA, 0.35);
-      this.game.vfx.crack(this.tmp, 1.8, 2, false);
-      this.game.vfx.dustBurst(this.tmp, 10, 1);
-      this.game.audio.play('swingHeavy');
-      hits = this.game.strike({ origin: this.tmp, yaw: this.yaw, range: 2.6, halfArc: Math.PI, mult: c.mult, knock: c.knock, skill: false, color: colB, burn: this.stats.powers.has('burn') || t, stagger: true });
-      if (this.stats.resonance) {
-        this.game.vfx.shockwave(this.tmp, 5.5, COLORS.goldHot, 0.5, 0.15);
-        this.game.strike({ origin: this.tmp, yaw: 0, range: 5, halfArc: Math.PI, mult: 0.8, knock: 1.5, skill: true, color: COLORS.goldHot, silentSwing: true });
+    let impact: THREE.Vector3 | null = null;
+    switch (c.shape) {
+      case 'arc':
+      case 'arcRev':
+        this.game.vfx.slash(this.pos, this.yaw, { radius: range, arc: Math.min(Math.PI * 1.3, c.arc * 2), reverse: c.shape === 'arcRev', tilt: c.shape === 'arc' ? -0.15 : 0.15, colorA: colA, colorB: colB });
+        this.game.audio.play('swing');
+        hits = this.strikeWith({ ...base, origin: this.pos, yaw: this.yaw, range, halfArc: c.arc }, crit);
+        break;
+      case 'spin':
+        this.game.vfx.slash(this.pos, this.yaw + Math.PI, { radius: range, arc: Math.PI * 1.98, colorA: colA, colorB: colB, dur: 0.3, height: 0.9 });
+        this.game.audio.play('whirl');
+        hits = this.strikeWith({ ...base, origin: this.pos, yaw: 0, range, halfArc: Math.PI }, crit);
+        break;
+      case 'crack': {
+        this.game.vfx.slash(this.pos, this.yaw, { radius: Math.min(range, 4) * 0.8, reverse: true, tilt: Math.PI / 2, height: 1.3, colorA: colA, colorB: colB, dur: 0.3 });
+        if (c.arc < 1) {
+          // Narrow overhead crash: hits a long line in front.
+          hits = this.strikeWith({ ...base, origin: this.pos, yaw: this.yaw, range, halfArc: Math.PI, line: 1.1 }, crit);
+          for (let d = 1.6; d <= range; d += 1.4) this.game.vfx.crack(this.tmp2.set(this.pos.x + fx * d, this.pos.y, this.pos.z + fz * d), 0.9, 2, false);
+          impact = this.tmp.set(this.pos.x + fx * range * 0.6, this.pos.y, this.pos.z + fz * range * 0.6);
+        } else {
+          impact = this.tmp.set(this.pos.x + fx * 2.2, this.pos.y, this.pos.z + fz * 2.2);
+          this.game.vfx.crack(impact, 1.8, 2, false);
+          hits = this.strikeWith({ ...base, origin: impact, yaw: this.yaw, range: 2.6 + Math.max(0, range - 3.9) * 0.5, halfArc: Math.PI }, crit);
+        }
+        this.game.vfx.shockwave(impact, 2.8, colA, 0.35);
+        this.game.vfx.dustBurst(impact, 10, 1);
+        this.game.audio.play('swingHeavy');
+        this.game.camRig.shake(0.35, 0.2);
+        break;
       }
-      this.game.camRig.shake(0.35, 0.2);
+      case 'stab':
+      case 'lunge':
+      case 'rise': {
+        const rise = c.shape === 'rise';
+        this.game.vfx.slash(this.pos, this.yaw, { radius: range, arc: rise ? 0.9 : 0.32, tilt: rise ? Math.PI / 2 : 0, reverse: rise, height: rise ? 1.2 : 1.05, colorA: colA, colorB: colB, dur: 0.2 });
+        for (let d = 1; d <= range; d += 0.7) {
+          if (Math.random() < 0.6) this.game.vfx.sparks.emit(this.pos.x + fx * d, this.pos.y + 1.05, this.pos.z + fz * d, { count: 1, radius: 0.15, speed: [0.5, 2], up: [0, 1], life: [0.15, 0.3], color: colB, color2: colA });
+        }
+        this.game.audio.play(c.shape === 'lunge' ? 'swingHeavy' : 'swing');
+        hits = this.strikeWith({ ...base, origin: this.pos, yaw: this.yaw, range, halfArc: Math.PI, line: rise ? 1.3 : 0.9 }, crit);
+        if (c.shape === 'lunge') this.game.camRig.shake(0.25, 0.15);
+        break;
+      }
+      case 'kick':
+        impact = this.tmp.set(this.pos.x + fx * 1.4, this.pos.y, this.pos.z + fz * 1.4);
+        this.game.vfx.dustBurst(impact, 8, 0.7);
+        this.game.vfx.shockwave(impact, 1.6, colA, 0.25);
+        this.game.audio.play('heavyHit');
+        hits = this.strikeWith({ ...base, origin: this.pos, yaw: this.yaw, range, halfArc: c.arc }, crit);
+        break;
     }
-    this.gainFocus(hits, i === 3 && hits > 0 ? 0.25 : 0);
+    if (last && this.stats.resonance) {
+      const at = impact ?? this.pos;
+      this.game.vfx.shockwave(at, 5.5, COLORS.goldHot, 0.5, 0.15);
+      this.game.strike({ origin: at, yaw: 0, range: 5, halfArc: Math.PI, mult: 0.8, knock: 1.5, skill: true, color: COLORS.goldHot, silentSwing: true });
+    }
+    this.gainFocus(hits, hits > 0 ? c.focus ?? 0 : 0);
     if (t) this.game.spawnFireWave(this.pos, this.yaw, this.rollDamage(0.6, false));
+  }
+
+  /** Yellow Wind four-piece: strong heavies loose three sand gales. */
+  private windGales(level: number) {
+    if (level < 2 || !this.stats.sets.has('yellowWind')) return;
+    for (const off of [-0.35, 0, 0.35]) this.game.spawnGale(this.pos, this.yaw + off, this.rollDamage(1.0, true));
+    this.game.audio.play('gale');
+  }
+
+  /** Spends all Focus; returns how many points were spent. */
+  private spendFocus() {
+    const spent = Math.floor(this.focus);
+    this.focus -= spent;
+    if (spent > 0) this.game.hud.floatText(this.pos, `Focus ×${spent}`, 'focus-pop', 0.9);
+    return spent;
+  }
+
+  /** Pillar heavy: an overhead crash that splits the ground down a long line. */
+  private doPillarCrash() {
+    const L = this.heavyLevel;
+    const spent = this.spendFocus();
+    const len = 5 + L * 1.6 + spent * 0.8 + rank(this.talents, 'pillarMastery');
+    const mult = (1.7 + 0.95 * L + 0.9 * spent) * (1 + this.stats.heavyDamage + rank(this.talents, 'pillarMastery') * 0.15);
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    const col = this.transformed ? COLORS.fire : 0x7ad0ff;
+    let i = 0;
+    for (let d = 1.4; d <= len; d += 1.1, i++) {
+      const p = this.tmp2.set(this.pos.x + fx * d, this.pos.y, this.pos.z + fz * d);
+      this.game.vfx.crack(p, 0.9 + L * 0.2, 3, L + spent > 0);
+      if (i % 2 === 0) this.game.vfx.dustBurst(p, 4 + L * 2, 0.6);
+    }
+    const end = this.tmp.set(this.pos.x + fx * len, this.pos.y, this.pos.z + fz * len);
+    this.game.vfx.shockwave(end, 2 + L * 0.6, col, 0.4, 0.16);
+    this.game.vfx.flash(this.tmp2.set(this.pos.x + fx * 1.8, this.pos.y + 0.6, this.pos.z + fz * 1.8), 2 + L, COLORS.goldHot, 0.16);
+    this.game.vfx.sparks.emit(this.pos.x + fx * 2, this.pos.y + 0.3, this.pos.z + fz * 2, { count: 16 + L * 10, radius: 1, speed: [3, 8], up: [3, 8], life: [0.3, 0.8], color: COLORS.goldHot, color2: col });
+    this.game.debris.burst(end, 0x5e5a52, 5 + L * 3, 0.16, 1 + L * 0.2);
+    if (L + spent >= 3) this.game.vfx.beam(end, col, 10, 0.7, 1.4);
+    this.game.strike({ origin: this.pos, yaw: this.yaw, range: len, halfArc: Math.PI, line: 1.4 + L * 0.2, mult, knock: 2 + L, skill: false, color: COLORS.goldHot, burn: this.transformed, stagger: true, poise: 50 + L * 35 + spent * 25 });
+    this.windGales(L);
+    this.game.audio.play(L + spent >= 2 ? 'slam' : 'heavyHit');
+    this.game.camRig.shake(0.45 + L * 0.15, 0.3);
+    this.game.hitstop(0.07 + L * 0.03);
+    this.game.rumble(0.45 + L * 0.2, 160 + L * 60);
+  }
+
+  /** Thrust heavy: the lunge has carried us through the line; everything along the path is pierced. */
+  private doThrustLunge() {
+    const L = this.heavyLevel;
+    const spent = this.spendFocus();
+    const from = this.heavyFrom;
+    const len = Math.hypot(this.pos.x - from.x, this.pos.z - from.z) + 2.6;
+    const mult = (1.3 + 0.85 * L + 0.85 * spent) * (1 + this.stats.heavyDamage);
+    const col = this.transformed ? COLORS.fire : 0x9cff8a;
+    this.game.vfx.slash(this.pos, this.yaw, { radius: 3.2, arc: 0.35, colorA: col, colorB: COLORS.goldHot, dur: 0.25 });
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    for (let d = 0; d <= len; d += 0.6) {
+      this.game.vfx.sparks.emit(from.x + fx * d, from.y + 1, from.z + fz * d, { count: 2, radius: 0.2, speed: [0.3, 2], up: [0.2, 1.5], life: [0.2, 0.5], color: COLORS.goldHot, color2: col });
+    }
+    const tip = this.tmp.set(this.pos.x + fx * 2.2, this.pos.y, this.pos.z + fz * 2.2);
+    this.game.vfx.shockwave(tip, 2 + L * 0.5, col, 0.35, 0.14);
+    this.game.vfx.flash(this.tmp2.set(tip.x, tip.y + 1, tip.z), 1.6 + L * 0.5, COLORS.goldHot, 0.14);
+    this.strikeWith({ origin: from, yaw: this.yaw, range: len, halfArc: Math.PI, line: 1.2, mult, knock: 1.5 + L, skill: false, color: COLORS.goldHot, burn: this.transformed, stagger: L > 0 || spent > 0, poise: 30 + L * 30 + spent * 25 },
+      0.1 + L * 0.12 + rank(this.talents, 'thrustMastery') * 0.04);
+    this.windGales(L);
+    this.game.audio.play(L + spent >= 2 ? 'slam' : 'heavyHit');
+    this.game.camRig.shake(0.3 + L * 0.12, 0.25);
+    this.game.hitstop(0.06 + L * 0.03);
+    this.game.rumble(0.35 + L * 0.2, 140 + L * 50);
   }
 
   private doHeavyImpact() {
     const L = this.heavyLevel;
-    const spent = Math.floor(this.focus);
-    this.focus -= spent;
+    const spent = this.spendFocus();
     const at = this.tmp.set(this.pos.x + Math.sin(this.yaw) * 1.8, this.pos.y, this.pos.z + Math.cos(this.yaw) * 1.8).clone();
     const r = 2.8 + L * 0.8 + spent * 0.4;
     const mult = (1.6 + 0.9 * L + 0.9 * spent) * (1 + this.stats.heavyDamage);
@@ -838,8 +1233,8 @@ export class Player {
     this.game.camRig.shake(0.4 + L * 0.15 + spent * 0.1, 0.3);
     this.game.hitstop(0.06 + L * 0.03);
     this.game.rumble(0.4 + L * 0.2, 150 + L * 60);
-    if (spent > 0) this.game.hud.floatText(this.pos, `Focus ×${spent}`, 'focus-pop', 0.9);
     if (L + spent >= 2) this.game.vfx.twinkle(at, r * 0.6, 6);
+    this.windGales(L);
   }
 
   private doFlameHit(i: number) {
@@ -919,8 +1314,18 @@ export class Player {
     const k = this.st / this.dur;
     let spin = 0;
     switch (this.state) {
-      case 'charge':
-        a.pose(HEAVY.clip, CHARGE_POSE + Math.sin(this.game.time * 40) * 0.004 * (1 + this.chargeLevel), 0.12);
+      case 'charge': {
+        const cp = STANCES[this.stance].chargePose;
+        a.pose(cp.clip, cp.t + Math.sin(this.game.time * 40) * 0.004 * (1 + this.chargeLevel), 0.12);
+        break;
+      }
+      case 'special':
+        if (this.special === 'sting' && this.move) {
+          // Each stab replays the thrust window.
+          const step = STING_STEP / (1 + this.stats.attackSpeed * 0.5);
+          const u = this.specialHits >= STING_COUNT ? 1 : ((this.st - 0.05) % step) / step;
+          this.poseMove(this.move, Math.max(0, u), 0.04);
+        } else if (this.move) this.poseMove(this.move, k, 0.06);
         break;
       case 'flame': {
         const step = 0.3 / (1 + this.stats.attackSpeed);
@@ -937,7 +1342,7 @@ export class Player {
       }
       case 'free':
         if (this.whirlTime > 0) {
-          this.poseMove(COMBO[2].move, hitAt(COMBO[2].move), 0.1);
+          this.poseMove(SPECIAL_MOVES.sweep, hitAt(SPECIAL_MOVES.sweep), 0.1);
           spin = this.game.time * 22;
         } else if (this.hurtT > 0) {
           this.poseMove(HURT, 1 - this.hurtT / (HURT.to - HURT.from), 0.05);
