@@ -1263,7 +1263,9 @@ export class Game {
         this.updateDirector(dt);
         this.updateShrines();
         if (this.state === 'playing' && !this.cutscene) {
-          this.level.updateExplore(dt, this.time, this.player.pos, this.zoneState.some((s) => s === 'active'), this.currentLevel() - this.ng * 8);
+          // A chest only stays shut while enemies are actually around it, not during any fight on the map.
+          const inFight = this.targets().some((e) => e.pos.distanceTo(this.player.pos) < 18);
+          this.level.updateExplore(dt, this.time, this.player.pos, inFight, this.currentLevel() - this.ng * 8);
         }
         // During cutscenes only the boss's entrance animation keeps running.
         for (const e of this.enemies) if (!this.cutscene || (e instanceof Boss && e.introPlaying)) e.update(dt);
