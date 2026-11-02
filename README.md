@@ -34,13 +34,20 @@ from the reference video. See *Credits* below.
 - **Look:** a retro pixel render (low-res world, dithered limited palette, outlines) or smooth, in Settings.
 - **Camera styles:** Isometric, Third person, Side view (2D) and Cinematic. Switch any time with **C** (or Settings, or d-pad down).
   Tall props and foliage between the camera and the hero dissolve in every style.
-- **Three chapters:** Mountain-Sea Temple, Yellow Wind Ridge (wolves, archers, the Tiger Vanguard) and the Frozen Bone Sanctum
-  (bone soldiers, frost witches, the Pale Bone Lady). Each has its own palette, weather, enemies, boss and story beats.
+- **Three chapters, three hand-designed maps:** the **Black Wind Forest** (lush forest valley, mountain ridges, Mirror Pond and a
+  stream crossed by a plank bridge, a ruined temple up two flights of stairs), the **Yellow Wind Ridge** (dunes, a sandstone canyon,
+  a wind cave, a switchback climb to a ruined fort and wind-carved arches) and the **Frozen Bone Sanctum** (a walkable frozen lake,
+  ice cliffs, snowy pines, rib-vaulted bone halls). Each has its own terrain, elevation, paths, palette, weather, enemy roster
+  (no spiders outside chapter one), boss and story beats.
 - **Travel and save:** every Keeper's Shrine you light can be fast-travelled to from the **Travel** tab; chapters you unlock can be revisited.
   Progress is saved per chapter.
 - **Gear you can see:** equipped staffs, armour, gloves, boots and relics change the hero, and every item has its own 3D pixel icon.
 - **Checkpoints:** a Keeper's Shrine in every area. Walk up to it to heal, refill the gourd, save and set your respawn point.
-- **Chapter 1:** five areas (Forest Clearing → Temple Courtyard → Stone Stairs → Upper Plaza → boss arena), plus
+- **Exploration:** side paths, hidden groves and ledges off the critical path, one-way shortcut gates, secrets behind breakable
+  rubble, spirit herbs, relic shards and lore notes, and chests in three kinds — normal, **ornate** (more and better loot) and
+  **sealed** ones that open only once you beat the elite guarding them or light every brazier of their puzzle. Opened chests and
+  taken collectables stay that way, saved per chapter.
+- **Chapter 1:** six areas (Black Wind Forest → Mirror Pond Glade → Old Pine Hollow → Temple Courtyard → Upper Terrace → boss arena), plus
   in-engine **cutscenes** for the chapter intro, the boss entrance and the victory. Cutscenes can be skipped with any button.
 - **Combat:**
   - Keyframed animations with wind-up, strike and follow-through, and weapon motion trails
@@ -64,7 +71,10 @@ from the reference video. See *Credits* below.
 
 ### Credits
 
-- **Quaternius** (CC0): Universal Animation Library 1 & 2 (mannequin and mocap clips), Stylized Nature MegaKit.
+- **Quaternius** (CC0): Universal Animation Library 1 & 2 (mannequin and mocap clips), Stylized Nature MegaKit
+  (trees, rocks, ferns, grass, mushrooms and flowers for every chapter).
+- **flo-bit** — *Low Poly Nature Pack* (CC0): snow-capped pines and firs, bare trees and stumps for the Frozen Bone Sanctum.
+- **Kay Lousberg (KayKit)** — *Dungeon Remastered* (CC0): chests (normal and gold), pillars and rubble.
 - **Kenney** and **OpenGameArt** authors incl. rubberduck, artisticdude, qubodup, LokiF, SubspaceAudio (CC0): sound effects, via
   `Legerdo/open-game-sfx-index`.
 - **Versilian Community Sample Library** (CC0): dan tranh zither, drums, gong, ocarina; **aliexpress-erhu** sample set (CC0).

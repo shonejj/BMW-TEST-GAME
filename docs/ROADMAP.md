@@ -18,13 +18,13 @@ built, checked in the browser and deployed to GitHub Pages after each merge.
 - [ ] Equipment visibly changes the model (head, chest, hands, legs, feet, weapon)
 
 ## Track C — World and level design
-- [ ] One hand-planned map per chapter (not one map re-tinted): distinct layout, paths, elevation (climb up ridges, stairs, cliffs)
-- [ ] Chapter 1 forest: lush, dense, mountain ridges, pond/stream water, less bare floor
-- [ ] Chapter 2 Yellow Wind Ridge: canyon, sand dunes, wind-carved rock, cave
-- [ ] Chapter 3 Frozen Bone Sanctum: frozen lake, ice cliffs, bone halls
-- [ ] Larger maps, side paths and secrets; more shrines placed at real choke points
-- [ ] Per-chapter enemy rosters (no spiders outside chapter 1)
-- [ ] GoW-style chests (normal, legendary, sealed) and collectables placed for exploration
+- [x] One hand-planned map per chapter (not one map re-tinted): distinct layout, paths, elevation (climb up ridges, stairs, cliffs)
+- [x] Chapter 1 forest: lush, dense, mountain ridges, pond/stream water, less bare floor
+- [x] Chapter 2 Yellow Wind Ridge: canyon, sand dunes, wind-carved rock, cave
+- [x] Chapter 3 Frozen Bone Sanctum: frozen lake, ice cliffs, bone halls
+- [x] Larger maps, side paths and secrets; more shrines placed at real choke points
+- [x] Per-chapter enemy rosters (no spiders outside chapter 1)
+- [x] Chests (normal, ornate, sealed) and collectables placed for exploration; opened state saved per chapter
 
 ## Track D — Combat, progression, items, story
 - [ ] Stances (Smash / Pillar / Thrust) with their own light combos, heavy attacks and charge levels
