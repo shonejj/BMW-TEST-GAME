@@ -17,6 +17,10 @@ export interface Label {
   remove(): void;
 }
 
+/** Pickup labels show only within this many metres of the hero. */
+const LABEL_RANGE = 6;
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = '') => {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -215,6 +219,7 @@ export class Hud {
 
   addLabel(pos: THREE.Vector3, text: string, color: string, cls = ''): Label {
     const el = h('div', 'loot-label ' + cls);
+    setStyle(el, 'display', 'none');
     el.textContent = text;
     el.style.color = color;
     el.style.borderColor = color;
@@ -235,12 +240,25 @@ export class Hud {
     for (const l of [...this.labels]) l.remove();
   }
 
+  /** Projects to screen pixels into `px`/`py`/`onScreen` (no allocation). */
   private project(pos: THREE.Vector3, camera: THREE.Camera, yOff: number) {
     this.tmp.set(pos.x, pos.y + yOff, pos.z).project(camera);
-    return { x: (this.tmp.x * 0.5 + 0.5) * window.innerWidth, y: (-this.tmp.y * 0.5 + 0.5) * window.innerHeight, visible: this.tmp.z < 1 };
+    this.px = (this.tmp.x * 0.5 + 0.5) * window.innerWidth;
+    this.py = (-this.tmp.y * 0.5 + 0.5) * window.innerHeight;
+    this.onScreen = this.tmp.z < 1 && this.tmp.x > -1.05 && this.tmp.x < 1.05 && this.tmp.y > -1.05 && this.tmp.y < 1.05;
   }
+  private px = 0;
+  private py = 0;
+  private onScreen = false;
+  /** Label slots already placed this frame (for de-overlapping), reused between frames. */
+  private placedX: number[] = [];
+  private placedY: number[] = [];
 
-  update(dt: number, camera: THREE.Camera) {
+  /**
+   * `focus` is the hero: pickup labels only show within LABEL_RANGE of it (on screen, roughly the same
+   * level), so loot and collectables never shout through walls or across the boss arena.
+   */
+  update(dt: number, camera: THREE.Camera, focus?: THREE.Vector3) {
     for (const f of this.floaters) {
       if (!f.active) continue;
       f.t += dt;
@@ -250,58 +268,84 @@ export class Hud {
         continue;
       }
       const k = f.t / f.dur;
-      const p = this.project(f.pos, camera, 1.8);
+      this.project(f.pos, camera, 1.8);
       const rise = 30 + k * 50;
       const scale = k < 0.15 ? 1.6 - k * 4 : 1;
-      f.el.style.transform = `translate(${p.x + f.dx * k}px, ${p.y - rise}px) translate(-50%, -50%) scale(${scale})`;
+      f.el.style.transform = `translate(${this.px + f.dx * k}px, ${this.py - rise}px) translate(-50%, -50%) scale(${scale})`;
       f.el.style.opacity = String(k > 0.6 ? 1 - (k - 0.6) / 0.4 : 1);
     }
-    // Loot labels, stacked so they don't overlap too much.
-    const placed: { x: number; y: number }[] = [];
+    // Loot labels: near the hero only, stacked so they don't overlap too much.
+    let n = 0;
     for (const l of this.labels) {
-      const p = this.project(l.pos, camera, 0.9);
-      let y = p.y;
-      for (const q of placed) if (Math.abs(q.x - p.x) < 110 && Math.abs(q.y - y) < 20) y = q.y - 22;
-      placed.push({ x: p.x, y });
-      l.el.style.transform = `translate(${p.x}px, ${y}px) translate(-50%, -100%)`;
+      let alpha = 1;
+      if (focus) {
+        const d = Math.hypot(l.pos.x - focus.x, l.pos.z - focus.z);
+        alpha = Math.abs(l.pos.y - focus.y) > 2.5 ? 0 : clamp01((LABEL_RANGE - d) / 1.2);
+      }
+      if (alpha > 0) {
+        this.project(l.pos, camera, 0.9);
+        if (!this.onScreen) alpha = 0;
+      }
+      if (alpha <= 0) {
+        setStyle(l.el, 'display', 'none');
+        continue;
+      }
+      setStyle(l.el, 'display', 'block');
+      const x = this.px;
+      let y = this.py;
+      for (let i = 0; i < n; i++) if (Math.abs(this.placedX[i] - x) < 110 && Math.abs(this.placedY[i] - y) < 20) y = this.placedY[i] - 22;
+      this.placedX[n] = x;
+      this.placedY[n] = y;
+      n++;
+      setStyle(l.el, 'opacity', alpha >= 1 ? '1' : alpha.toFixed(2));
+      l.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
     }
     this.vignetteT = Math.max(0, this.vignetteT - dt);
     this.vignette.style.opacity = String(this.vignetteT * 2.5);
   }
 
-  /** Draws the local area of the pre-rendered map, plus markers. */
-  drawMinimap(map: HTMLCanvasElement, bounds: { x0: number; z1: number }, px: number, pz: number, yaw: number, dots: { x: number; z: number; boss?: boolean }[], gates: { x0: number; x1: number; z: number; active: boolean }[]) {
+  /**
+   * Draws the local area of the pre-rendered map, plus markers. The map turns with the camera (heading-up):
+   * "up" on the minimap is always "into the screen" in the game view, so it matches what the player sees.
+   * `camYaw` is the camera's yaw round the hero; `yaw` is the hero's facing.
+   */
+  drawMinimap(map: HTMLCanvasElement, bounds: { x0: number; z1: number }, px: number, pz: number, yaw: number, dots: { x: number; z: number; boss?: boolean }[], gates: { x0: number; x1: number; z: number; active: boolean }[], camYaw = 0) {
     const ctx = this.miniCtx;
     const W = this.mini.width, H = this.mini.height;
     const scale = 2; // map px per metre
     const view = 1.4; // zoom
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#141513';
     ctx.fillRect(0, 0, W, H);
-    const mx = (px - bounds.x0) * scale, my = (bounds.z1 - pz) * scale;
-    ctx.save();
+    // World (dx, dz) relative to the hero → screen, matching Input.toWorld's camera basis:
+    // screen x = dx·cos − dz·sin, screen y = dx·sin + dz·cos, i.e. a rotation by the camera yaw.
     ctx.translate(W / 2, H / 2);
     ctx.scale(view, view);
-    ctx.drawImage(map, -mx, -my);
+    ctx.rotate(camYaw);
+    // The baked map has image y = (z1 − z)·scale, so flip it back into world z.
+    ctx.save();
+    ctx.translate((bounds.x0 - px) * scale, (bounds.z1 - pz) * scale);
+    ctx.scale(1, -1);
+    ctx.drawImage(map, 0, 0);
+    ctx.restore();
+    ctx.strokeStyle = '#ff3a2a';
+    ctx.lineWidth = 2;
     for (const g of gates) {
       if (!g.active) continue;
-      ctx.strokeStyle = '#ff3a2a';
-      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo((g.x0 - px) * scale, (pz - g.z) * scale);
-      ctx.lineTo((g.x1 - px) * scale, (pz - g.z) * scale);
+      ctx.moveTo((g.x0 - px) * scale, (g.z - pz) * scale);
+      ctx.lineTo((g.x1 - px) * scale, (g.z - pz) * scale);
       ctx.stroke();
     }
     for (const d of dots) {
       ctx.fillStyle = d.boss ? '#7dff9a' : '#ff3030';
       ctx.beginPath();
-      ctx.arc((d.x - px) * scale, (pz - d.z) * scale, d.boss ? 4 : 2, 0, Math.PI * 2);
+      ctx.arc((d.x - px) * scale, (d.z - pz) * scale, d.boss ? 4 : 2, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.restore();
-    // Player arrow
-    ctx.save();
-    ctx.translate(W / 2, H / 2);
+    // Player arrow: tip along the hero's facing (sin yaw, cos yaw) in world X/Z.
     ctx.rotate(Math.PI - yaw);
+    ctx.scale(1 / view, 1 / view);
     ctx.fillStyle = '#ff4a2a';
     ctx.strokeStyle = '#2a0a05';
     ctx.lineWidth = 1;
@@ -313,6 +357,15 @@ export class Hud {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    ctx.restore();
+    // North tick (world −Z, the way the journey runs) on the rim.
+    ctx.setTransform(1, 0, 0, 1, W / 2, H / 2);
+    const nx = Math.sin(camYaw), ny = -Math.cos(camYaw);
+    const R = W / 2 - 10;
+    ctx.fillStyle = '#e2b25a';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', nx * R, ny * R);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 }
