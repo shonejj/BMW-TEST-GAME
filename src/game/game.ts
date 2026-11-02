@@ -765,7 +765,7 @@ export class Game {
     if (elite) e.makeElite();
     this.enemies.push(e);
     if (zone >= 0) this.zoneEnemies[zone].push(e);
-    if (kind === 'boss') this.boss = e as Boss;
+    if (kind === 'boss' || kind === 'tiger' || kind === 'bonelady') this.boss = e as Boss;
     if (this.settings.quality === 'high') e.root.traverse((o) => (o.castShadow = true));
     return e;
   }
