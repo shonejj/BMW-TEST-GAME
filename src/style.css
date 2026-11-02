@@ -636,3 +636,6 @@ html, body {
   .top-buttons { right: calc(116px + var(--safe-r)); }
   .ctl-editor { padding: 6px 10px; gap: 4px; }
 }
+.ctl-editor { top: 50%; transform: translate(-50%, -50%); }
+.ctl-row .mbtn.sq::before, .ctl-row .mbtn.sq::after { display: none; }
+.ctl-row .mbtn.sq { width: 40px; height: 34px; font: 700 20px var(--ui); color: var(--gold-hot); border: 1px solid var(--line); }
