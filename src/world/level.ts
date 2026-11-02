@@ -104,7 +104,7 @@ export class Level {
   private readonly mist: THREE.Mesh[] = [];
   private readonly owned: { dispose(): void }[] = [];
   private obstHash = new Map<number, Circle[]>();
-  private regionList: { name: string; shape: Shape }[] = [];
+  private regionList: { name: string; shape: Shape; zone: number }[] = [];
   private detail: ReturnType<typeof groundDetailTexture> | null = null;
   private flag: ReturnType<typeof flagstoneTexture> | null = null;
 
@@ -181,7 +181,8 @@ export class Level {
     this.bossSpot.set(L.boss[0], this.heightAt(L.boss[0], L.boss[1]), L.boss[1]);
     for (const [x, z] of L.route) this.route.push(new THREE.Vector3(x, this.heightAt(x, z), z));
     this.buildZones(chapter);
-    this.regionList = [...L.regions, ...this.zones.map((z) => ({ name: z.name, shape: z.trigger }))];
+    // Zone names come from the chapter and change with applyChapter, so look them up by index, not by value.
+    this.regionList = [...L.regions.map((r) => ({ ...r, zone: -1 })), ...this.zones.map((_, i) => ({ name: '', shape: L.zones[i].trigger, zone: i }))];
     this.buildTerrainMesh();
     this.buildPaving();
     this.buildWater();
@@ -330,7 +331,7 @@ export class Level {
 
   /** Name of the place at a point (named regions first, then the nearest zone). */
   locationAt(x: number, z: number) {
-    for (const r of this.regionList) if (shapeDistance(r.shape, x, z) <= 0) return r.name;
+    for (const r of this.regionList) if (shapeDistance(r.shape, x, z) <= 0) return r.zone >= 0 ? this.zones[r.zone].name : r.name;
     let best = this.zones[0]?.name ?? '', bd = Infinity;
     for (const zn of this.zones) {
       const d = Math.hypot(zn.checkpoint.x - x, zn.checkpoint.z - z);
@@ -769,9 +770,11 @@ export class Level {
    */
   private buildFoliage() {
     const t = this.terrain, B = this.layout.foliage, q = this.quality;
-    const treeD = q === 'high' ? 1 : q === 'medium' ? 0.5 : 0.3;
-    const coverD = q === 'high' ? 1 : q === 'medium' ? 0.55 : 0.3;
-    const step = q === 'low' ? 1.8 : 1.5;
+    const treeD = q === 'high' ? 1 : q === 'medium' ? 0.45 : 0.25;
+    const coverD = q === 'high' ? 1 : q === 'medium' ? 0.5 : 0.25;
+    const step = q === 'low' ? 2.2 : q === 'medium' ? 1.8 : 1.5;
+    // Leaf cards are alpha-cut and overlap, so the forest is mostly fill rate: phones see a shallower band.
+    const bandFar = B.treeBand[1] * (q === 'high' ? 1 : q === 'medium' ? 0.75 : 0.55);
     const far: THREE.Matrix4[] = [];
     const pickW = (list: [string, number][]) => {
       let sum = 0;
@@ -813,7 +816,7 @@ export class Level {
           if (r < 0.12 * treeD + 0.04 && B.slopeRocks.length) this.addNature(pickW(B.slopeRocks), jx, g - 0.4, jz, 0.7 + this.rng() * 1.1);
           continue;
         }
-        if (d >= B.treeBand[0] && d <= B.treeBand[1]) {
+        if (d >= B.treeBand[0] && d <= bandFar) {
           if (r < B.treeDensity * treeD && B.trees.length) {
             const [s0, s1] = B.treeScale;
             this.addNature(pickW(B.trees), jx, g - 0.15, jz, s0 + this.rng() * (s1 - s0));
@@ -822,7 +825,7 @@ export class Level {
           }
           continue;
         }
-        if (d > B.treeBand[1] && B.far !== 'none' && r < 0.07 * (q === 'low' ? 0.6 : 1)) {
+        if (d > bandFar && B.far !== 'none' && r < 0.07 * (q === 'high' ? 1 : 0.5)) {
           far.push(new THREE.Matrix4().compose(new THREE.Vector3(jx, g - 0.2, jz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, this.rng() * 6, 0)), new THREE.Vector3().setScalar(1.4 + this.rng() * 1.2)));
         }
       }
