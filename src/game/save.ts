@@ -41,6 +41,10 @@ export interface Settings {
   /** Retro pixel-art render pass, or native-resolution smooth rendering. */
   look: Look;
   camera: CameraMode;
+  /** Camera eases back to its default angle a few seconds after the player stops looking around. */
+  autoRecenter: boolean;
+  /** Camera look (orbit) speed multiplier for stick, mouse and touch drag. */
+  lookSensitivity: number;
 }
 
 const SAVE_KEY = 'monkey-king-save-v1';
@@ -69,6 +73,6 @@ export const loadSave = () => {
 export const writeSave = (s: SaveData) => write(SAVE_KEY, s);
 
 export function loadSettings(defaultQuality: Quality, defaultFps = 60): Settings {
-  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: defaultFps, dynamicRes: true, cutscenes: true, look: 'pixel', camera: 'iso', ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
+  return { quality: defaultQuality, volume: 0.8, music: 0.5, damageNumbers: true, screenShake: 1, fpsCap: defaultFps, dynamicRes: true, cutscenes: true, look: 'pixel', camera: 'iso', autoRecenter: true, lookSensitivity: 1, ...(read<Partial<Settings>>(SETTINGS_KEY) ?? {}) };
 }
 export const writeSettings = (s: Settings) => write(SETTINGS_KEY, s);

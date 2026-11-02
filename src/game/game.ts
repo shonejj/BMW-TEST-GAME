@@ -12,6 +12,7 @@ import { Level, type Breakable, type SpawnKind } from '../world/level';
 import { Rain } from '../world/weather';
 import { camDirUniform } from '../world/nature';
 import { CAMERA_MODES, type CameraMode } from '../engine/camera';
+import { markOccluders } from '../engine/occlusion';
 import { Boss, Enemy, EnemyOverlays, Ghoul, Spider, Weaver } from './enemies';
 import {
   BAG_SIZE, RARITY_COLORS, RARITY_HEX, generateItem, rollRarity, salvageValue, setNextItemId,
@@ -150,7 +151,9 @@ export class Game {
     this.renderer.setLook(this.settings.look);
     this.camRig = new CameraRig(this.renderer.camera);
     this.camRig.setMode(this.settings.camera);
+    this.camRig.autoRecenter = this.settings.autoRecenter;
     this.input = new Input(this.renderer.renderer.domElement);
+    this.input.lookSensitivity = this.settings.lookSensitivity;
     this.hud = new Hud(container);
     const unlock = () => this.audio.unlock();
     this.controls = new Controls(container, this.input, this.touch, unlock);
@@ -171,6 +174,7 @@ export class Game {
   boot() {
     const q = this.settings.quality;
     this.level.build(q);
+    this.camRig.groundAt = (x, z) => this.level.terrainHeight(x, z);
     this.vfx = new Vfx(this.renderer.scene, q === 'low' ? 800 : 1600);
     this.debris = new Debris(this.renderer.scene, (x, z) => this.level.heightAt(x, z));
     this.rain = new Rain(1400);
@@ -263,6 +267,8 @@ export class Game {
     this.chapter = n;
     const c = CHAPTERS[n];
     this.level.applyChapter(c);
+    markOccluders(this.level.group, this.renderer.scene);
+    this.audio.setChapterAmbience(n);
     this.rain.setStyle(c.theme.weather, c.theme.weatherColor);
     this.rain.setVisibleCount(Math.min(c.theme.weatherCount, this.settings.quality === 'low' ? 350 : this.settings.quality === 'medium' ? 650 : 1400));
     this.renderer.setGrade(c.theme.grade, c.theme.saturation);
@@ -393,7 +399,19 @@ export class Game {
     if (p.dynamicRes === false) { this.renderer.dynamicScale = 1; this.renderer.applyPixelRatio(); this.updateParticleScale(); }
     if (p.volume !== undefined) this.audio.setVolume(p.volume);
     if (p.music !== undefined) this.audio.setMusicVolume(p.music);
+    if (p.autoRecenter !== undefined) this.camRig.autoRecenter = p.autoRecenter;
+    if (p.lookSensitivity !== undefined) this.input.lookSensitivity = p.lookSensitivity;
     writeSettings(this.settings);
+  }
+
+  /** Settings → "Customize controls": edit the touch layout over the live view, then back to Settings. */
+  customizeControls() {
+    this.menus.close();
+    this.controls.setVisible(true);
+    this.controls.customize(() => {
+      this.controls.setVisible(this.state === 'playing');
+      if (this.state === 'paused') this.menus.showGameMenu('settings');
+    });
   }
 
   /** Switches camera style; cinematic mode adds letterbox bars while playing. */
@@ -1192,7 +1210,10 @@ export class Game {
     if (this.cutscene) {
       if (this.input.anyPress && this.cutscene.elapsed > 0.4) this.cutscene.skip();
       this.cutscene?.update(rawDt);
-    } else this.camRig.update(rawDt, pl.pos, pl.yaw, this.time);
+    } else {
+      this.camRig.orbit(this.input, rawDt);
+      this.camRig.update(rawDt, pl.pos, pl.yaw, this.time);
+    }
     this.input.anyPress = false;
     if (this.state === 'paused' && this.menus.current === 'game') this.portraitShot(rawDt);
     this.overlays.update(this.enemies, this.renderer.camera);
@@ -1201,7 +1222,7 @@ export class Game {
     // UI
     const p = this.player;
     this.hud.setStats(p.hp, p.stats.maxHp, p.mana, p.stats.maxMana, p.xp, p.xpToNext, p.level, this.inventory.gold);
-    this.hud.update(dt > 0 ? rawDt : 0, this.renderer.camera);
+    this.hud.update(dt > 0 ? rawDt : 0, this.renderer.camera, p.pos);
     this.controls.update(p);
     this.hud.setFocus(p.focus);
     this.audio.boss = !!(this.boss && this.boss.alive);
@@ -1209,7 +1230,7 @@ export class Game {
     this.miniTimer -= rawDt;
     if (this.miniTimer <= 0) {
       this.miniTimer = 0.1;
-      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates);
+      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates, this.camRig.yaw);
     }
     const near = this.targets().filter((e) => e.pos.distanceTo(p.pos) < 18).length;
     this.audio.combatIntensity += ((near > 0 ? 1 : 0) - this.audio.combatIntensity) * Math.min(1, rawDt * 0.8);

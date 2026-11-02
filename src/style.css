@@ -606,3 +606,33 @@ html, body {
 .tv-row.dark { opacity: 0.4; }
 .tv-row.here small { color: var(--gold-hot); }
 .tv-row:focus, .tv-row:hover { outline: none; background: linear-gradient(90deg, rgba(150, 30, 16, 0.5), transparent 85%); }
+
+/* ------------------------------------------------- Track A: look zone, camera button, layout editor */
+.look-zone { position: absolute; top: 0; right: 0; bottom: 0; left: 45%; pointer-events: auto; touch-action: none; }
+.controls.desktop .look-zone { display: none; }
+.controls.touch .btn, .controls.touch .stick { opacity: var(--ctl-alpha, 1); }
+.top-buttons { width: 150px; }
+.top-buttons .btn.small:nth-child(3) { right: 100px; }
+.btn.cam .icon { width: 58%; height: 58%; }
+.controls.editing { z-index: 30; background: rgba(0, 0, 0, 0.35); pointer-events: auto; }
+.controls.editing .btn, .controls.editing .stick { outline: 1px dashed rgba(255, 228, 160, 0.55); outline-offset: 3px; }
+.controls.editing .stick:not(.active) { border-color: rgba(255, 228, 160, 0.6); }
+.controls.editing .ctl-sel { outline: 2px solid var(--gold-hot); box-shadow: 0 0 18px rgba(255, 200, 100, 0.6); }
+.controls.editing .look-zone { pointer-events: none; }
+.ctl-editor {
+  position: absolute; top: calc(12px + var(--safe-t)); left: 50%; transform: translateX(-50%); z-index: 2;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 14px; pointer-events: auto;
+  background: rgba(14, 12, 10, 0.92); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+  font: 600 12px var(--ui); max-width: min(92vw, 420px); text-align: center;
+}
+.ctl-title { font: 700 14px var(--display); letter-spacing: 0.15em; color: var(--gold-hot); }
+.ctl-hint { opacity: 0.8; }
+.ctl-row { display: flex; align-items: center; gap: 10px; }
+.ctl-row .mbtn { padding: 8px 16px; font-size: 13px; }
+.ctl-row .mbtn.sq { padding: 0; }
+.ctl-sel-name { min-width: 110px; color: var(--gold-hot); }
+.ctl-row input[type=range] { width: 160px; }
+@media (max-height: 420px) {
+  .top-buttons { right: calc(116px + var(--safe-r)); }
+  .ctl-editor { padding: 6px 10px; gap: 4px; }
+}

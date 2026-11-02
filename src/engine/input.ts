@@ -45,6 +45,23 @@ export class Input {
   suppressed = false;
   /** Set by any key / click / touch / gamepad button; used to skip cutscenes. */
   anyPress = false;
+  /**
+   * Free camera look for this frame: drag deltas in radians (mouse middle-drag, touch drag on the right of
+   * the screen) and stick/key rates in -1..1 (right stick, Z/X). Read by CameraRig.orbit().
+   */
+  lookX = 0;
+  lookY = 0;
+  lookRateX = 0;
+  lookRateY = 0;
+  /** When true the right stick orbits the camera instead of aiming (set by the camera rig per style). */
+  rightStickLook = false;
+  /** Look sensitivity multiplier (settings). */
+  lookSensitivity = 1;
+  private lookAccX = 0;
+  private lookAccY = 0;
+  private dragId = -1;
+  private dragX = 0;
+  private dragY = 0;
 
   private keys = new Set<string>();
   private pressed = new Set<Action>();
@@ -89,10 +106,24 @@ export class Input {
     canvas.addEventListener('mousedown', (e) => {
       if (e.button === 0) this.mouseAttack = true;
       if (e.button === 2) this.mouseHeavy = true;
+      if (e.button === 1) {
+        // Middle-button drag orbits the camera (no pointer lock needed).
+        e.preventDefault();
+        this.dragId = 1;
+        this.dragX = e.clientX;
+        this.dragY = e.clientY;
+      }
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (this.dragId !== 1) return;
+      this.addLook(e.clientX - this.dragX, e.clientY - this.dragY, 0.005);
+      this.dragX = e.clientX;
+      this.dragY = e.clientY;
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseAttack = false;
       if (e.button === 2) this.mouseHeavy = false;
+      if (e.button === 1) this.dragId = -1;
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('pointerdown', () => (this.anyPress = true));
@@ -107,6 +138,11 @@ export class Input {
   }
   setTouchHeavy(held: boolean) {
     this.touchHeavy = held;
+  }
+  /** Adds a drag in screen pixels to this frame's camera look (`k` = radians per pixel). */
+  addLook(dxPx: number, dyPx: number, k = 0.006) {
+    this.lookAccX += dxPx * k * this.lookSensitivity;
+    this.lookAccY += dyPx * k * this.lookSensitivity;
   }
   press(a: Action) {
     this.pressed.add(a);
@@ -140,6 +176,12 @@ export class Input {
     this.padAttack = false;
     let padHeavy = false;
     this.padAim = null;
+    this.lookX = this.lookAccX;
+    this.lookY = this.lookAccY;
+    this.lookAccX = this.lookAccY = 0;
+    let lrx = 0, lry = 0;
+    if (this.keys.has('KeyZ')) lrx -= 1;
+    if (this.keys.has('KeyX')) lrx += 1;
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (const pad of pads) {
       if (!pad) continue;
@@ -150,7 +192,20 @@ export class Input {
         this.usingGamepad = true;
       }
       const rx = pad.axes[2] ?? 0, ry = pad.axes[3] ?? 0;
-      if (Math.hypot(rx, ry) > 0.35) this.padAim = this.toWorld(rx, ry);
+      if (this.rightStickLook) {
+        // Radial deadzone, then a squared response curve for fine aim near the centre.
+        const m = Math.hypot(rx, ry);
+        if (m > 0.18) {
+          const s = ((m - 0.18) / 0.82) ** 2 / m;
+          lrx += rx * s;
+          lry += ry * s;
+        }
+      } else if (Math.hypot(rx, ry) > 0.35) {
+        const w = this.toWorld(rx, ry);
+        this.padAimV.x = w.x;
+        this.padAimV.y = w.y;
+        this.padAim = this.padAimV;
+      }
       pad.buttons.forEach((b, i) => {
         if (b.pressed) this.usingGamepad = true;
         if (b.pressed && !this.padPrev[i]) {
@@ -169,9 +224,12 @@ export class Input {
       x /= len;
       y /= len;
     }
+    this.lookRateX = lrx * this.lookSensitivity;
+    this.lookRateY = lry * this.lookSensitivity;
     if (this.suppressed) {
       x = y = 0;
       this.pressed.clear();
+      this.lookX = this.lookY = this.lookRateX = this.lookRateY = 0;
     }
     const w = this.toWorld(x, y);
     this.moveX = w.x;
@@ -184,6 +242,12 @@ export class Input {
   /** Screen-space (x right, y down) to world X/Z for the current camera yaw. */
   toWorld(x: number, y: number) {
     const c = Math.cos(this.camYaw), sn = Math.sin(this.camYaw);
-    return { x: x * c + y * sn, y: -x * sn + y * c };
+    const w = this.worldV;
+    w.x = x * c + y * sn;
+    w.y = -x * sn + y * c;
+    return w;
   }
+  /** Scratch results (no per-frame allocation); copy the values if you need to keep them. */
+  private readonly worldV = { x: 0, y: 0 };
+  private readonly padAimV = { x: 0, y: 0 };
 }

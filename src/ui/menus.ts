@@ -452,6 +452,7 @@ export class Menus {
     // Settings
     this.on(s, '[data-a=help]', () => this.showHelp(() => this.showGameMenu('settings')));
     this.on(s, '[data-a=restart]', () => g.restartFromCheckpoint());
+    this.on(s, '[data-a=customize]', () => g.customizeControls());
     this.on(s, '[data-a=mainmenu]', () => this.confirm('Return to the title screen?', 'Progress is saved at the last cleared area.', () => g.toMainMenu(), () => this.showGameMenu('settings')));
     s.querySelectorAll<HTMLSelectElement | HTMLInputElement>('[data-setting]').forEach((el) => {
       el.addEventListener(el.type === 'range' ? 'input' : 'change', () => {
@@ -626,6 +627,8 @@ export class Menus {
         ${cyc('quality', 'Graphics', [['low', 'Low (coolest)'], ['medium', 'Medium'], ['high', 'High']])}
         ${cyc('look', 'Visual style', [['pixel', 'Retro pixel'], ['smooth', 'Smooth']])}
         ${cyc('camera', 'Camera', [['iso', 'Isometric'], ['third', 'Third person'], ['side', 'Side view (2D)'], ['cinema', 'Cinematic']])}
+        ${cyc('autoRecenter', 'Camera auto-recenter', [[true, 'On'], [false, 'Off']])}
+        ${cyc('lookSensitivity', 'Camera look speed', [[0.6, 'Slow'], [1, 'Normal'], [1.5, 'Fast']])}
         ${cyc('fpsCap', 'Frame rate', [[30, '30 fps · battery saver'], [60, '60 fps'], [0, 'Unlimited']])}
         ${cyc('dynamicRes', 'Auto resolution', [[true, 'On'], [false, 'Off']])}
         ${cyc('screenShake', 'Screen shake & rumble', [[1, 'Full'], [0.5, 'Reduced'], [0, 'Off']])}
@@ -635,6 +638,7 @@ export class Menus {
         ${step('music', 'Music')}
       </div>
       <div class="row-buttons">
+        ${this.game.touch ? '<button class="mbtn" data-nav data-a="customize" data-key="customize">Customize Controls</button>' : ''}
         <button class="mbtn" data-nav data-a="help" data-key="help">How to Play</button>
         <button class="mbtn" data-nav data-a="restart" data-key="restart">Restart from Checkpoint</button>
         <button class="mbtn" data-nav data-a="mainmenu" data-key="mainmenu">Main Menu</button>
