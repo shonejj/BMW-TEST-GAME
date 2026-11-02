@@ -19,7 +19,7 @@ export const CH2: LayoutDef = {
       { shape: circle(-2, -60, 12), h: 1, floor: 'sand', undulate: 0.5, edge: 1.3 }, // canyon narrows
       { shape: circle(-30, -68, 6.5), h: 1.2, floor: 'rock', edge: 2.2 }, // wind cave
       { shape: circle(13, -81, 3), h: 3, floor: 'dirt' }, // shrine alcove on the climb
-      { shape: circle(-8, -94, 7), h: 5.5, floor: 'dirt', edge: 1.2 }, // switchback corner
+      { shape: circle(-8, -94, 7), h: 5.2, floor: 'dirt', edge: 1.2 }, // switchback corner
       { shape: rect(-14, -140, 14, -112), h: 8, floor: 'stone', pave: true, edge: 0.6 }, // sandstone fort
       { shape: circle(38, -106, 7), h: 6, floor: 'sand', undulate: 0.6 }, // bone-dry basin
       { shape: circle(-5, -149, 3), h: 8, floor: 'sand' }, // shrine alcove
@@ -32,7 +32,7 @@ export const CH2: LayoutDef = {
     paths: [
       { pts: [[0, -11, 0], [6, -30, 0.5], [2, -48.5, 1]], w: 6, floor: 'sand', edge: 1.6 },
       { pts: [[-13, -62, 1], [-24, -66, 1.2]], w: 3.6, floor: 'rock', edge: 1.6 },
-      { pts: [[-4, -71, 1], [10, -80, 3], [-6, -92, 5.5], [4, -104, 8], [4, -113, 8]], w: 5, floor: 'dirt', edge: 1.2 },
+      { pts: [[-4, -71, 1], [10, -80, 3], [-1, -88, 5.0], [-6, -92, 5.2], [4, -104, 8], [4, -113, 8]], w: 5, floor: 'dirt', edge: 1.2 },
       { pts: [[13.5, -125, 8], [26, -122, 7], [34, -112, 6]], w: 3.6, floor: 'sand' },
       { pts: [[0, -139.5, 8], [0, -150, 8], [8, -165, 9.5], [0, -179, 11]], w: 6, floor: 'sand', edge: 1.2 },
       { pts: [[-11, -188, 11], [-21, -186, 11.5]], w: 2.6, floor: 'rock' },
@@ -83,7 +83,7 @@ export const CH2: LayoutDef = {
     { kind: 'tent', at: [-8, -132] }, { kind: 'tent', at: [8, -130] },
     { kind: 'pillar', at: [-12, -124], s: 2.2 }, { kind: 'pillar', at: [11, -122], s: 1.4 },
     { kind: 'tent', at: [41, -103] }, { kind: 'banner', at: [35, -109] },
-    { kind: 'rockArch', at: [3.6, -158], s: 10, rot: 0.5 }, { kind: 'rockArch', at: [4, -172], s: 10, rot: -0.5 },
+    { kind: 'rockArch', at: [3.6, -158], s: 12, rot: -0.5 }, { kind: 'rockArch', at: [4, -172], s: 12, rot: 0.5 },
     { kind: 'hoodoo', at: [-9, -194], s: 7 }, { kind: 'hoodoo', at: [8, -198], s: 5.5 }, { kind: 'hoodoo', at: [9, -183], s: 4 },
     { kind: 'statue', at: [-4.5, -217.5] }, { kind: 'statue', at: [4.5, -224.5] },
     { kind: 'banner', at: [-12, -230] }, { kind: 'banner', at: [12, -230] }, { kind: 'banner', at: [-10, -242] }, { kind: 'banner', at: [10, -242] },
@@ -103,7 +103,7 @@ export const CH2: LayoutDef = {
   },
   breakables: [
     ['urn', 5, -4], ['crate', -6, 0], ['urn', -8, -64], ['barrel', 5, -54], ['crate', 6, -55],
-    ['barrel', -10, -120], ['crate', -11, -121.4], ['urn', 10, -135], ['bell', 0, -130], ['barrel', 9, -126],
+    ['barrel', -10, -120], ['crate', -11, -121.4], ['urn', 10, -135], ['bell', 7, -133], ['barrel', 9, -126],
     ['urn', -6, -186], ['urn', 6, -194], ['crate', -10, -250], ['barrel', 10, -250],
     ['rubble', -14.5, -187.6],
   ],
@@ -129,6 +129,6 @@ export const CH2: LayoutDef = {
   ],
   doors: [],
   puzzles: [
-    { id: 'p2-braziers', chest: 'c2-fort', braziers: [[-1.5, -30], [-25, -63], [31, -109]] },
+    { id: 'p2-braziers', chest: 'c2-fort', braziers: [[8.5, -31], [-25, -63], [31, -109]] },
   ],
 };

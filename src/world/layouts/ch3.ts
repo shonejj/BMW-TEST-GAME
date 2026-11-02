@@ -116,7 +116,7 @@ export const CH3: LayoutDef = {
     { id: 'c3-cliff', at: [-21, -175], rot: 1.5, kind: 'normal' },
   ],
   collectables: [
-    { id: 'h3-path', at: [6, -12], kind: 'herb' },
+    { id: 'h3-path', at: [3.5, -11], kind: 'herb' },
     { id: 'r3-lake', at: [-12, -66], kind: 'relic' },
     { id: 'l3-falls', at: [-42, -50], kind: 'lore', text: 'Frozen into the ice: "Three fires at the falls, the ledge and the plaza will thaw the abbess\'s chest."' },
     { id: 'h3-ledge', at: [10, -120], kind: 'herb' },
