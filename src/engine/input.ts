@@ -1,4 +1,4 @@
-export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack' | 'gourd' | 'heavy' | 'camera';
+export type Action = 'dodge' | 'skill0' | 'skill1' | 'skill2' | 'skill3' | 'transform' | 'inventory' | 'pause' | 'attack' | 'gourd' | 'heavy' | 'camera' | 'stance';
 
 const KEY_ACTIONS: Record<string, Action> = {
   Space: 'dodge', ShiftLeft: 'dodge', ShiftRight: 'dodge', KeyK: 'dodge',
@@ -12,13 +12,14 @@ const KEY_ACTIONS: Record<string, Action> = {
   KeyJ: 'attack',
   KeyG: 'gourd', KeyH: 'gourd',
   KeyL: 'heavy',
+  KeyX: 'stance',
 };
 
 // Standard gamepad: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 LT, 7 RT, 8 Back, 9 Start, 11 R3, 12 D-pad up.
 // X = light attack (held), Y = heavy attack (held).
 const PAD_ACTIONS: [number, Action][] = [
   [0, 'dodge'], [1, 'gourd'], [4, 'skill0'], [5, 'skill1'], [6, 'skill2'], [7, 'skill3'],
-  [11, 'transform'], [12, 'transform'], [8, 'inventory'], [9, 'pause'], [13, 'camera'],
+  [11, 'transform'], [12, 'transform'], [8, 'inventory'], [9, 'pause'], [13, 'camera'], [14, 'stance'],
 ];
 
 /**

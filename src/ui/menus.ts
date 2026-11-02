@@ -1,11 +1,19 @@
 import type { Game } from '../game/game';
 import {
-  BAG_SIZE, POWER_TEXT, RARITY_COLORS, RARITY_NAMES, SLOTS, SLOT_NAMES, STAT_LABELS, itemScore, salvageValue,
+  BAG_SIZE, BASE_TRAITS, MAX_TEMPER, POWER_TEXT, RARITY_COLORS, RARITY_NAMES, SETS, SET_COLOR, SLOTS, SLOT_NAMES, baseIndex, itemScore, itemStats,
+  salvageValue, setCounts, statIsGood, statLine, temperCost,
   type Item, type Slot, type StatKey,
 } from '../game/loot';
 import {
-  SPELLS, SPELL_IDS, TALENTS, canLearn, pointsAvailable, rank, spellUnlocked, type Branch, type SpellId, type TalentId,
+  BRANCHES, SPELLS, SPELL_IDS, TALENTS, canLearn, pointsAvailable, rank, spellUnlocked, type SpellId, type TalentId,
 } from '../game/progression';
+import { STANCES } from '../game/stances';
+import {
+  CURIOS, CURIO_IDS, DRINKS, DRINK_IDS, GOURD_MAX, PILLS, PILL_IDS, SOAKS, SOAK_IDS, gourdUpgradeCost,
+  type CurioId, type DrinkId, type PillId, type SoakId,
+} from '../game/items';
+import { LORE_NOTES, PROLOGUE, STORY } from '../game/story';
+import './journey.css';
 import { KINDS } from '../game/enemies';
 import { CHAPTERS } from '../game/chapters';
 import { ICONS, STAT_ICONS } from './icons';
@@ -13,11 +21,12 @@ import { itemImg } from './itemart';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-type Tab = 'advance' | 'spells' | 'equipment' | 'inventory' | 'travel' | 'journal' | 'settings';
+type Tab = 'advance' | 'spells' | 'equipment' | 'inventory' | 'gourd' | 'travel' | 'journal' | 'settings';
 const TABS: [Tab, string][] = [
   ['advance', 'Self-Advance'], ['spells', 'Spells'], ['equipment', 'Equipment'],
-  ['inventory', 'Inventory'], ['travel', 'Travel'], ['journal', 'Journal'], ['settings', 'Settings'],
+  ['inventory', 'Inventory'], ['gourd', 'Gourd & Curios'], ['travel', 'Travel'], ['journal', 'Journal'], ['settings', 'Settings'],
 ];
+type JournalPage = 'story' | 'lore' | 'yaoguai';
 
 const LORE: Record<string, string> = {
   spiderling: 'Hatchlings of the temple brood. Alone they are a nuisance; in the dark they come by the dozen.',
@@ -48,6 +57,9 @@ export class Menus {
   private selectedItem: number | null = null;
   private spellSlot = 0;
   private journalKind = 'spiderling';
+  private journalPage: JournalPage = 'story';
+  private loreId = '';
+  private curioSlot = 0;
   private back: (() => void) | null = null;
   private padPrev: boolean[] = [];
   private navRepeat = 0;
@@ -286,9 +298,9 @@ export class Menus {
         <h2>How to Play</h2>
         <div class="help-grid">
           <div><h3>Keyboard &amp; Mouse</h3>
-            <p><b>WASD</b> move · <b>Mouse</b> aim<br><b>Left click</b> staff combo (hold)<br><b>Right click</b> heavy attack (hold to charge)<br><b>Space</b> dodge roll<br><b>1–4</b> spells · <b>G</b> healing gourd<br><b>T</b> Monkey King · <b>I</b> menu · <b>Esc</b> pause</p></div>
+            <p><b>WASD</b> move · <b>Mouse</b> aim<br><b>Left click</b> staff combo (hold)<br><b>Right click</b> heavy attack (hold to charge)<br><b>Space</b> dodge roll<br><b>1–4</b> spells · <b>G</b> healing gourd<br><b>X</b> switch stance<br><b>T</b> Monkey King · <b>I</b> menu · <b>Esc</b> pause</p></div>
           <div><h3>Gamepad / Joystick</h3>
-            <p><b>Left stick</b> move · <b>Right stick</b> aim<br><b>X</b> combo · <b>Y</b> heavy (hold)<br><b>A</b> dodge · <b>B</b> gourd<br><b>LB RB LT RT</b> spells<br><b>R3 / D-pad ↑</b> Monkey King<br><b>Start</b> menu · menus: stick + A/B, LB/RB tabs</p></div>
+            <p><b>Left stick</b> move · <b>Right stick</b> aim<br><b>X</b> combo · <b>Y</b> heavy (hold)<br><b>A</b> dodge · <b>B</b> gourd<br><b>LB RB LT RT</b> spells<br><b>R3 / D-pad ↑</b> Monkey King · <b>D-pad ←</b> stance<br><b>Start</b> menu · menus: stick + A/B, LB/RB tabs</p></div>
           <div><h3>Touch</h3>
             <p>Left thumb: <b>joystick</b> (appears where you touch)<br>Big button: <b>combo</b> · hammer: <b>heavy</b> (hold)<br>Small buttons: <b>dodge</b>, <b>gourd</b>, <b>spells</b>, <b>Monkey King</b><br>Attacks auto-aim at nearby enemies</p></div>
         </div>
@@ -297,7 +309,10 @@ export class Menus {
           <li>Light hits build <b>Focus</b> (the three pips under your health). A charged <b>heavy smash</b> spends all Focus for a huge blow that staggers enemies and breaks bosses.</li>
           <li>Dodge just before a hit for a <b>Perfect Dodge</b>: slow motion and +1 Focus.</li>
           <li>Red circles warn of attacks. Clear each area to break the red seal. Your gourd refills at every cleared area.</li>
-          <li>Each level gives a talent point — spend it in <b>Self-Advance</b>. New spells are learned there and equipped in <b>Spells</b>.</li>
+          <li><b>Stances</b> (X / D-pad ← / tap the HUD): Smash, Pillar and Thrust each have their own combo, charged heavy and special (tap Heavy mid-combo). Learn them in <b>Self-Advance</b>.</li>
+          <li>Each level gives a spark — spend it in <b>Self-Advance</b> on stances, combo strikes, specials, spells and the Monkey King form.</li>
+          <li>Gear has trade-offs: heavy armour protects but slows your dodge, a spear crits but leaves you frail. Sets, curios, drinks and soaks change how you play.</li>
+          <li>Falling drops your <b>Will</b> where you fell — walk back to it to recover it. Fall again first and it is lost. Resting at a shrine refills the gourd and wakes the yaoguai.</li>
         </ul>
         <button class="mbtn primary default" data-nav data-a="back">Back</button>
       </div>`, back);
@@ -313,13 +328,14 @@ export class Menus {
     const g = this.game;
     const p = g.player;
     const st = p.stats;
-    const pts = pointsAvailable(p.level, p.talents);
+    const pts = pointsAvailable(p.level, p.talents, g.journey.s.bonusSparks);
     let body = '';
     switch (tab) {
       case 'advance': body = this.advanceTab(); break;
       case 'spells': body = this.spellsTab(); break;
       case 'equipment': body = this.equipmentTab(); break;
       case 'inventory': body = this.inventoryTab(); break;
+      case 'gourd': body = this.gourdTab(); break;
       case 'journal': body = this.journalTab(); break;
       case 'travel': body = this.travelTab(); break;
       case 'settings': body = this.settingsTab(); break;
@@ -332,7 +348,7 @@ export class Menus {
           ${TABS.map(([t, n]) => `<button class="gm-tab ${t === tab ? 'active' : ''}" data-tab="${t}" data-nav data-key="tab-${t}">${n}${t === 'advance' && pts > 0 ? `<i class="dot">${pts}</i>` : ''}</button>`).join('<span class="sep"></span>')}
           <span class="tab-hint">E / RB</span>
         </div>
-        <div class="gm-currency"><span class="gold-icon">◈</span>${g.inventory.gold.toLocaleString()}<span class="pts-icon">✦</span>${pts}</div>
+        <div class="gm-currency" title="Will · Sparks"><span class="gold-icon">◈</span>${g.inventory.gold.toLocaleString()} Will<span class="pts-icon">✦</span>${pts}</div>
         <button class="close" data-nav data-a="close" data-key="close">${ICONS.close}</button>
       </div>
       <div class="gm-body">
@@ -349,8 +365,9 @@ export class Menus {
             ${stat('spell', 'Spell damage', '+' + Math.round(st.skillDamage * 100) + '%')}
             ${stat('cdr', 'Cooldowns', '-' + Math.round(st.cdr * 100) + '%')}
             ${stat('gourd', 'Gourd', `${p.gourd}/${st.gourdCharges}`)}
+            ${stat('damage', 'Stance', STANCES[p.stance].name)}
           </div>
-          <div class="char-quote">"Seventy-two transformations, one staff, and a temple full of yaoguai."</div>
+          <div class="char-quote">"Three relics scattered across three peaks. A staff, a gourd, and a long road west."</div>
         </div>
       </div>
       <div class="gm-foot"><span>${g.touch ? 'Tap to select' : '<b>Enter / A</b> Select'}</span><span><b>Esc / B</b> Return</span></div>`, () => g.resume());
@@ -366,7 +383,7 @@ export class Menus {
     this.on(s, '[data-talent]', (el) => {
       const id = el.dataset.talent as TalentId;
       const def = TALENTS.find((t) => t.id === id)!;
-      if (canLearn(def, p.talents, p.level)) {
+      if (canLearn(def, p.talents, p.level, g.journey.s.bonusSparks)) {
         this.game.audio.play('uiBack');
         return;
       }
@@ -383,6 +400,7 @@ export class Menus {
         detail.querySelector('.td-name')!.textContent = el.dataset.name!;
         detail.querySelector('.td-rank')!.textContent = 'Rank ' + el.dataset.rank;
         detail.querySelector('.td-desc')!.textContent = el.dataset.desc!;
+        detail.querySelector('.td-kind')!.textContent = el.dataset.kind!;
         const req = detail.querySelector<HTMLElement>('.td-req')!;
         req.textContent = el.dataset.req!;
         req.className = 'td-req ' + (el.classList.contains('can') ? 'ok' : '');
@@ -431,6 +449,32 @@ export class Menus {
       this.selectedItem = null;
       this.showGameMenu(this.tab);
     });
+    this.on(s, '[data-a=temper]', () => {
+      const it = this.findItem(this.selectedItem);
+      if (!it || !g.journey.temper(it)) { g.audio.play('uiBack'); if (!g.journey.atShrine()) g.hud.toast('Temper gear at a lit Keeper\'s Shrine', '#c8b89a'); }
+      this.showGameMenu(this.tab);
+    });
+    // Gourd & curios
+    this.on(s, '[data-cslot]', (el) => { this.curioSlot = +el.dataset.cslot!; this.showGameMenu('gourd'); });
+    this.on(s, '[data-curio]', (el) => {
+      const id = el.dataset.curio as CurioId;
+      if (!g.journey.s.curios.includes(id)) return;
+      const cur = g.journey.s.curioSlots[this.curioSlot];
+      g.journey.equipCurio(this.curioSlot, cur === id ? null : id);
+      this.showGameMenu('gourd');
+    });
+    this.on(s, '[data-drink]', (el) => { g.journey.setDrink(el.dataset.drink as DrinkId); g.player.computeStats(g.inventory); this.showGameMenu('gourd'); });
+    this.on(s, '[data-soak]', (el) => {
+      const id = el.dataset.soak as SoakId;
+      g.journey.setSoak(g.journey.s.soak === id ? null : id);
+      this.showGameMenu('gourd');
+    });
+    this.on(s, '[data-a=gourd-up]', () => { if (!g.journey.upgradeGourd()) g.audio.play('uiBack'); this.showGameMenu('gourd'); });
+    this.on(s, '[data-use]', (el) => { if (!g.journey.usePill(el.dataset.use as PillId)) g.audio.play('uiBack'); this.showGameMenu('gourd'); });
+    this.on(s, '[data-buy]', (el) => { if (!g.journey.buyPill(el.dataset.buy as PillId)) g.audio.play('uiBack'); this.showGameMenu('gourd'); });
+    // Journal pages
+    this.on(s, '[data-jpage]', (el) => { this.journalPage = el.dataset.jpage as JournalPage; this.showGameMenu('journal'); });
+    this.on(s, '[data-lore]', (el) => { if (g.journey.s.lore.includes(el.dataset.lore!)) { this.loreId = el.dataset.lore!; this.showGameMenu('journal'); } });
     this.on(s, '[data-a=salvage-low]', () => {
       g.salvage(g.inventory.bag.filter((i) => i.rarity <= 1));
       this.selectedItem = null;
@@ -485,27 +529,32 @@ export class Menus {
   }
 
   private advanceTab() {
-    const p = this.game.player;
-    const branches: [Branch, string][] = [['Body', 'hp'], ['Staff', 'damage'], ['Spells', 'spell'], ['Gourd', 'gourd'], ['Great Sage', 'crit']];
+    const g = this.game;
+    const p = g.player;
+    const bonus = g.journey.s.bonusSparks;
+    const KIND_NAME: Record<string, string> = { stat: 'Attribute', stance: 'Stance', combo: 'Combo', special: 'Stance special', spell: 'Spell', passive: 'Passive' };
+    const st = STANCES[p.stance];
     return `
-      <div class="tab-title"><h2>Self-Advance</h2><span class="hint">Sparks: <b>${pointsAvailable(p.level, p.talents)}</b> · one per level</span>
+      <div class="tab-title"><h2>Self-Advance</h2><span class="hint">Sparks: <b>${pointsAvailable(p.level, p.talents, bonus)}</b> · one per level${bonus ? `, +${bonus} from relics` : ''}</span>
         <button class="mini-btn" data-nav data-a="reset-talents" data-key="reset">Reset</button></div>
       <div class="adv-layout">
-        <div class="talent-tree">
-          ${branches.map(([b, icon]) => `<div class="branch"><h3>${b}</h3><div class="nodes">${TALENTS.filter((t) => t.branch === b).map((t) => {
+        <div class="talent-tree tree7">
+          ${BRANCHES.map(([b, icon]) => `<div class="branch"><h3>${b}</h3><div class="nodes">${TALENTS.filter((t) => t.branch === b).map((t) => {
             const r = rank(p.talents, t.id);
-            const why = canLearn(t, p.talents, p.level);
+            const why = canLearn(t, p.talents, p.level, bonus);
             const locked = why && why !== 'Maxed' && why !== 'No points';
-            const esc = (x: string) => x.replace(/"/g, '&quot;');
-            return `<button class="tnode ${r > 0 ? 'learned' : ''} ${r >= t.max ? 'max' : ''} ${locked ? 'locked' : ''} ${!why ? 'can' : ''}" data-nav data-talent="${t.id}" data-key="t-${t.id}"
-                data-name="${esc(t.name)}" data-desc="${esc(t.desc(Math.max(1, r + (r < t.max ? 1 : 0))))}" data-rank="${r} / ${t.max}" data-req="${locked ? esc(why) : !why ? 'Ready to learn' : why === 'Maxed' ? 'Mastered' : 'No sparks left'}">
-              <span class="tn-gem">${STAT_ICONS[icon] ?? ''}</span>
+            const q = (x: string) => x.replace(/"/g, '&quot;');
+            return `<button class="tnode k-${t.kind} ${r > 0 ? 'learned' : ''} ${r >= t.max ? 'max' : ''} ${locked ? 'locked' : ''} ${!why ? 'can' : ''}" data-nav data-talent="${t.id}" data-key="t-${t.id}"
+                data-name="${q(t.name)}" data-kind="${KIND_NAME[t.kind]}" data-desc="${q(t.desc(Math.max(1, r + (r < t.max ? 1 : 0))))}" data-rank="${r} / ${t.max}" data-req="${locked ? q(why) : !why ? 'Ready to learn' : why === 'Maxed' ? 'Mastered' : 'No sparks left'}">
+              <span class="tn-gem">${STAT_ICONS[icon] ?? STAT_ICONS.damage ?? ''}</span>
               <span class="tn-name">${t.name}</span>
               <span class="t-pips">${Array.from({ length: t.max }, (_, i) => `<i class="${i < r ? 'on' : ''}"></i>`).join('')}</span>
             </button>`;
           }).join('')}</div></div>`).join('')}
         </div>
-        <div class="t-detail"><h3 class="td-name">Self-Advance</h3><div class="td-rank"></div><p class="td-desc">Select a talent to read about it.</p><p class="td-req"></p></div>
+        <div class="t-detail"><div class="td-kind"></div><h3 class="td-name">Self-Advance</h3><div class="td-rank"></div><p class="td-desc">Select a node. Most nodes unlock something: stances, combo strikes, stance specials, spells and the Monkey King form.</p><p class="td-req"></p>
+          <div class="stance-card" style="--sc:${st.color}"><b>${st.name} Stance</b> (active)<br>${st.blurb}<br>Combo: ${p.chain().length} strikes${p.specialKnown ? ` · Special: ${st.specialName} (tap Heavy mid-combo)` : ''}<br><small>${g.touch ? 'Tap a stance on the HUD' : 'X / D-pad ←'} to switch stance.</small></div>
+        </div>
       </div>`;
   }
 
@@ -531,28 +580,70 @@ export class Menus {
   }
 
   private itemCard(it: Item, extraCls = '') {
-    return `<button class="item-card r${it.rarity} ${this.selectedItem === it.id ? 'selected' : ''} ${extraCls}" style="--rc:${RARITY_COLORS[it.rarity]}" data-nav data-item="${it.id}" data-key="it-${it.id}">
-      <span class="ic">${itemImg(this.game.renderer.renderer, it)}</span><span class="lvl">${it.level}</span>${extraCls.includes('is-equipped') ? '<span class="eq-mark">✦</span>' : ''}</button>`;
+    const col = it.set ? SET_COLOR : RARITY_COLORS[it.rarity];
+    return `<button class="item-card r${it.rarity} ${it.set ? 'set' : ''} ${this.selectedItem === it.id ? 'selected' : ''} ${extraCls}" style="--rc:${col}" data-nav data-item="${it.id}" data-key="it-${it.id}">
+      <span class="ic">${itemImg(this.game.renderer.renderer, it)}</span><span class="lvl">${it.level}</span>${it.plus ? `<span class="plus">+${it.plus}</span>` : ''}${extraCls.includes('is-equipped') ? '<span class="eq-mark">✦</span>' : ''}</button>`;
+  }
+
+  /** Stat lines with plus in green and minus in red; base trade-off lines are marked. */
+  private statLines(it: Item) {
+    const rolled = itemStats({ ...it, implicit: {} });
+    const imp = it.implicit ?? {};
+    const li = (k: StatKey, v: number, cls = '') => `<li class="${statIsGood(k, v) ? 'good' : 'bad'} ${cls}">${statLine(k, v)}</li>`;
+    return (Object.entries(imp) as [StatKey, number][]).map(([k, v]) => li(k, v, 'implicit')).join('') +
+      (Object.entries(rolled) as [StatKey, number][]).map(([k, v]) => li(k, v)).join('');
+  }
+
+  /** Per-stat difference against what is equipped in the slot. */
+  private compareLines(it: Item, other: Item | undefined) {
+    const a = itemStats(it);
+    const b = other ? itemStats(other) : {};
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)] as StatKey[]);
+    const parts: string[] = [];
+    for (const k of keys) {
+      const d = (a[k] ?? 0) - (b[k] ?? 0);
+      if (Math.abs(d) < 1e-3) continue;
+      parts.push(`<span class="${statIsGood(k, d) ? 'up' : 'down'}">${statLine(k, d)}</span>`);
+    }
+    if (it.power !== other?.power) {
+      if (it.power) parts.push(`<span class="up">+ ${esc(POWER_TEXT[it.power])}</span>`);
+      if (other?.power) parts.push(`<span class="down">− ${esc(POWER_TEXT[other.power])}</span>`);
+    }
+    return parts.length ? parts.join('') : '<span>No change</span>';
   }
 
   private detail(it: Item | undefined, compare?: Item) {
     if (!it) return `<div class="detail-card empty">Select an item to see its details.</div>`;
-    const lines = Object.entries(it.stats).map(([k, v]) => `<li>${STAT_LABELS[k as StatKey](v!)}</li>`).join('');
-    const diff = compare && compare.id !== it.id ? itemScore(it) - itemScore(compare) : null;
-    const equipped = this.game.inventory.equipped[it.slot]?.id === it.id;
-    return `<div class="detail-card" style="--rc:${RARITY_COLORS[it.rarity]}">
-      <div class="dc-head"><span class="dc-rarity">${RARITY_NAMES[it.rarity]}</span><span class="dc-ic">${itemImg(this.game.renderer.renderer, it)}</span></div>
-      <div class="dc-name">${esc(it.name)}</div>
+    const g = this.game;
+    const equipped = g.inventory.equipped[it.slot]?.id === it.id;
+    const trait = BASE_TRAITS[it.slot][baseIndex(it)];
+    const col = it.set ? SET_COLOR : RARITY_COLORS[it.rarity];
+    let setHtml = '';
+    if (it.set) {
+      const def = SETS[it.set];
+      const n = setCounts(g.inventory.equipped)[it.set] ?? 0;
+      setHtml = `<div class="dc-set"><h4>${def.name} (${n}/4)</h4>
+        <p class="${n >= 2 ? 'on' : ''}">(2) ${def.two}</p><p class="${n >= 4 ? 'on' : ''}">(4) ${def.four}</p>
+        <p>${def.pieces.map((pc) => pc.name).join(' · ')}</p></div>`;
+    }
+    const showCompare = !equipped;
+    const atShrine = g.journey.atShrine();
+    const canTemper = (it.plus ?? 0) < MAX_TEMPER;
+    return `<div class="detail-card" style="--rc:${col}">
+      <div class="dc-head"><span class="dc-rarity">${it.set ? 'Set' : RARITY_NAMES[it.rarity]}</span><span class="dc-ic">${itemImg(g.renderer.renderer, it)}</span></div>
+      <div class="dc-name">${esc(it.name)}${it.plus ? ` <span class="dc-plus">+${it.plus}</span>` : ''}</div>
       <div class="dc-type">${SLOT_NAMES[it.slot]} · Level ${it.level}</div>
-      <ul class="dc-stats">${lines}</ul>
+      <div class="dc-trait">${trait.note}</div>
+      <ul class="dc-stats">${this.statLines(it)}</ul>
       ${it.power ? `<div class="dc-power"><h4>Legendary Power</h4><p>${POWER_TEXT[it.power]}</p></div>` : ''}
-      ${diff !== null ? `<div class="dc-compare ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '▲ Better' : '▼ Worse'} than equipped</div>` : ''}
+      ${setHtml}
+      ${showCompare ? `<div class="dc-diff"><h4>${compare ? 'If equipped instead of ' + esc(compare.name) : 'If equipped (slot empty)'}</h4>${this.compareLines(it, compare)}</div>` : ''}
       <div class="dc-actions">${equipped
         ? `<button class="mbtn wide" data-nav data-a="unequip" data-key="act-unequip">Equipped · Unequip</button>`
-        : `<button class="mbtn primary wide" data-nav data-a="equip" data-key="act-equip">Equip</button><button class="mbtn wide" data-nav data-a="salvage" data-key="act-salvage">Salvage +${salvageValue(it)}g</button>`}</div>
+        : `<button class="mbtn primary wide" data-nav data-a="equip" data-key="act-equip">Equip</button><button class="mbtn wide" data-nav data-a="salvage" data-key="act-salvage">Offer +${salvageValue(it)} Will</button>`}
+        ${canTemper ? `<button class="mbtn wide" data-nav data-a="temper" data-key="act-temper" ${atShrine ? '' : 'aria-disabled="true"'}>${atShrine ? `Temper +${(it.plus ?? 0) + 1} · ${temperCost(it)} Will` : 'Temper at a Keeper\'s Shrine'}</button>` : ''}</div>
     </div>`;
   }
-
   private equipmentTab() {
     const inv = this.game.inventory;
     const slot = this.equipSlot;
@@ -597,21 +688,94 @@ export class Menus {
         <span class="tv-dot"></span><span class="tv-name">${c.title}<em>${c.place}</em></span><small>${i === g.chapter ? 'You are here' : i < g.unlocked ? 'Journey' : 'Locked'}</small></button>`).join('')}</div>`;
   }
 
-  private journalTab() {
-    const b = this.game.bestiary;
-    const kinds = Object.keys(KINDS);
-    const k = this.journalKind;
-    const seen = (b[k] ?? 0) > 0;
+  /** Gourd (upgrade, drink, soak), curios and medicines; buying and upgrading need a Keeper's Shrine. */
+  private gourdTab() {
+    const g = this.game;
+    const j = g.journey;
+    const s = j.s;
+    const at = j.atShrine();
+    const slots = j.curioSlotCount;
+    if (this.curioSlot >= slots) this.curioSlot = 0;
+    const cost = gourdUpgradeCost(s.gourdLevel);
+    const pill = (id: PillId) => {
+      const d = PILLS[id];
+      const n = s.pills[id] ?? 0;
+      return `<div class="cg-card ${n ? '' : 'locked'}"><b>${d.name} ×${n}</b><small>${d.desc}</small>
+        <span class="row-buttons"><button class="mini-btn" data-nav data-use="${id}" data-key="use-${id}" ${n ? '' : 'aria-disabled="true"'}>Use</button>
+        <button class="mini-btn" data-nav data-buy="${id}" data-key="buy-${id}" ${at ? '' : 'aria-disabled="true"'}>Buy · ${j.pillPrice(id)} Will</button></span></div>`;
+    };
     return `
-      <div class="tab-title"><h2>Journal · Yaoguai</h2></div>
-      <div class="journal">
-        <div class="j-list">${kinds.map((id) => `<button class="j-entry ${id === k ? 'active' : ''}" data-nav data-journal="${id}" data-key="j-${id}">${(b[id] ?? 0) > 0 ? KINDS[id as keyof typeof KINDS].name : '???'}<small>${b[id] ?? 0} slain</small></button>`).join('')}</div>
-        <div class="j-page">${seen ? `<h3>${KINDS[k as keyof typeof KINDS].name}</h3><p>${LORE[k]}</p>` : '<h3>???</h3><p class="hint">Defeat this yaoguai to record it.</p>'}
-          <h3>Chapter One</h3><p>The Mountain-Sea Temple fell silent when the brood came. Little Monkey climbs its rain-soaked stairs to face what nests in the main hall.</p>
+      <div class="tab-title"><h2>Gourd &amp; Curios</h2><span class="hint">Celestial Dew: <b>${s.dew}</b> · Will: <b>${g.inventory.gold}</b></span></div>
+      <div class="shrine-note ${at ? '' : 'off'}">${at ? 'You stand at a Keeper\'s Shrine: upgrade the gourd, buy medicines, temper gear (Equipment tab).' : 'Offerings (gourd upgrades, medicines, tempering) are made at a lit Keeper\'s Shrine. Resting there refills the gourd — and wakes the yaoguai again.'}</div>
+      <div class="cg-layout">
+        <div>
+          <h3>Gourd · Level ${s.gourdLevel} / ${GOURD_MAX}</h3>
+          <div class="cg-meta">Heals <b>${Math.round(g.player.stats.gourdHeal * 100)}%</b> Life · <b>${g.player.stats.gourdCharges}</b> charges</div>
+          ${s.gourdLevel < GOURD_MAX ? `<button class="mbtn" data-nav data-a="gourd-up" data-key="gourd-up" ${at && s.dew >= cost.dew && g.inventory.gold >= cost.will ? '' : 'aria-disabled="true"'}>Upgrade · ${cost.dew} Dew + ${cost.will} Will</button>` : '<div class="cg-meta">The gourd is fully refined.</div>'}
+          <h3>Drink</h3>
+          ${DRINK_IDS.map((id: DrinkId) => {
+            const own = s.drinks.includes(id);
+            return `<button class="cg-card ${s.drink === id ? 'on' : ''} ${own ? '' : 'locked'}" data-nav data-drink="${id}" data-key="dr-${id}"><b>${own ? DRINKS[id].name : '???'}</b><small>${own ? DRINKS[id].desc : 'Not yet found'}</small></button>`;
+          }).join('')}
+          <h3>Soak</h3>
+          ${SOAK_IDS.map((id: SoakId) => {
+            const own = s.soaks.includes(id);
+            return `<button class="cg-card ${s.soak === id ? 'on' : ''} ${own ? '' : 'locked'}" data-nav data-soak="${id}" data-key="so-${id}"><b>${own ? SOAKS[id].name : '???'}</b><small>${own ? SOAKS[id].desc : 'Not yet found'}</small></button>`;
+          }).join('')}
+        </div>
+        <div>
+          <h3>Curios · ${slots} slots</h3>
+          <div class="cg-slots">${Array.from({ length: slots }, (_, i) => {
+            const c = s.curioSlots[i];
+            return `<button class="cg-slot ${i === this.curioSlot ? 'active' : ''}" data-nav data-cslot="${i}" data-key="cs-${i}"><b>${c ? CURIOS[c].name : 'Empty'}</b><small>Slot ${i + 1}</small></button>`;
+          }).join('')}</div>
+          ${CURIO_IDS.map((id: CurioId) => {
+            const own = s.curios.includes(id);
+            const worn = s.curioSlots.slice(0, slots).indexOf(id);
+            return `<button class="cg-card ${worn >= 0 ? 'on' : ''} ${own ? '' : 'locked'}" data-nav data-curio="${id}" data-key="cu-${id}"><b>${own ? CURIOS[id].name : '???'}${worn >= 0 ? ` · slot ${worn + 1}` : ''}</b><small>${own ? CURIOS[id].desc : 'Not yet found — bosses, elites and chests hold curios'}</small>${own ? `<em>${CURIOS[id].lore}</em>` : ''}</button>`;
+          }).join('')}
+          <h3>Medicines</h3>
+          ${PILL_IDS.map(pill).join('')}
         </div>
       </div>`;
   }
 
+  private journalTab() {
+    const g = this.game;
+    const page = this.journalPage;
+    const tabs = `<div class="j-tabs">${(['story', 'lore', 'yaoguai'] as JournalPage[]).map((pg) => `<button class="mini-btn ${pg === page ? 'active' : ''}" data-nav data-jpage="${pg}" data-key="jp-${pg}">${pg === 'story' ? 'Story' : pg === 'lore' ? `Lore notes (${g.journey.s.lore.length}/${LORE_NOTES.length})` : 'Yaoguai'}</button>`).join('')}</div>`;
+    if (page === 'story') {
+      const relics = g.journey.s.relics;
+      const seen = Math.max(g.unlocked, g.chapter + 1);
+      return `<div class="tab-title"><h2>Journal · The Road West</h2></div>${tabs}
+        <div class="j-page">${PROLOGUE.map((t) => `<p class="lore-text">${t}</p>`).join('')}
+          ${STORY.slice(0, seen).map((st, i) => `<h3>${CHAPTERS[i].title} · ${CHAPTERS[i].place}</h3><p>${st.summary}</p>
+            <p class="relic">${relics.includes(st.relic.id) ? `✦ ${st.relic.name} — ${st.relic.boon}` : '✧ The relic of this land is still lost.'}</p>`).join('')}
+        </div>`;
+    }
+    if (page === 'lore') {
+      const found = LORE_NOTES.filter((n) => g.journey.s.lore.includes(n.id));
+      const cur = found.find((n) => n.id === this.loreId) ?? found[0];
+      return `<div class="tab-title"><h2>Journal · Lore</h2></div>${tabs}
+        <div class="journal">
+          <div class="j-list">${LORE_NOTES.map((n) => {
+            const has = g.journey.s.lore.includes(n.id);
+            return `<button class="j-entry ${cur?.id === n.id ? 'active' : ''}" data-nav data-lore="${n.id}" data-key="lo-${n.id}" ${has ? '' : 'aria-disabled="true"'}>${has ? esc(n.title) : '???'}<small>${CHAPTERS[n.chapter].place}</small></button>`;
+          }).join('')}</div>
+          <div class="j-page">${cur ? `<h3>${esc(cur.title)}</h3><p class="lore-text">${esc(cur.text)}</p>` : '<h3>No notes yet</h3><p class="hint">Scraps of writing lie hidden around each land. Explore off the main path.</p>'}</div>
+        </div>`;
+    }
+    const b = g.bestiary;
+    const kinds = Object.keys(KINDS);
+    const k = this.journalKind;
+    const seen = (b[k] ?? 0) > 0;
+    return `
+      <div class="tab-title"><h2>Journal · Yaoguai</h2></div>${tabs}
+      <div class="journal">
+        <div class="j-list">${kinds.map((id) => `<button class="j-entry ${id === k ? 'active' : ''}" data-nav data-journal="${id}" data-key="j-${id}">${(b[id] ?? 0) > 0 ? KINDS[id as keyof typeof KINDS].name : '???'}<small>${b[id] ?? 0} slain</small></button>`).join('')}</div>
+        <div class="j-page">${seen ? `<h3>${KINDS[k as keyof typeof KINDS].name}</h3><p>${LORE[k]}</p>` : '<h3>???</h3><p class="hint">Defeat this yaoguai to record it.</p>'}</div>
+      </div>`;
+  }
   private settingsTab() {
     const st = this.game.settings;
     const cyc = (key: string, label: string, opts: [string | number | boolean, string][]) => {
@@ -650,7 +814,7 @@ export class Menus {
   showDeath() {
     const s = this.show('dead', 'death', `
       <div class="death-text">You Have Fallen</div>
-      <div class="death-sub">The mountain spirits carry you back to the last shrine.</div>
+      <div class="death-sub">The mountain spirits carry you back to the last shrine.${this.game.journey.s.willDrop?.amount ? ` Your Will (${this.game.journey.s.willDrop.amount}) lies where you fell — recover it before you fall again.` : ''}</div>
       <button class="mbtn primary default" data-nav data-a="revive">Rise Again</button>`);
     this.on(s, '[data-a=revive]', () => this.game.restartFromCheckpoint());
   }

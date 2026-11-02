@@ -2,6 +2,7 @@ import type { Item, Slot } from './loot';
 import type { Look, Quality } from '../engine/renderer';
 import type { CameraMode } from '../engine/camera';
 import type { SpellId, Talents } from './progression';
+import type { JourneySave } from './journey';
 
 export interface SaveData {
   version: 1;
@@ -22,6 +23,11 @@ export interface SaveData {
   chapter?: number;
   progress?: number[];
   unlocked?: number;
+  /**
+   * Track D state: stance, curios, gourd (level, drink, soak, dew), medicines, lore notes found, relics,
+   * bonus sparks, and Will dropped at the last death spot.
+   */
+  journey?: JourneySave;
 }
 
 export interface Settings {
