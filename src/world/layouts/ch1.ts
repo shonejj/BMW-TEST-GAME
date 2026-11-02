@@ -48,14 +48,14 @@ export const CH1: LayoutDef = {
       // up the stream to the Hidden Spring
       { pts: [[-9, -90, 1.15], [-20, -93, 1.6], [-30, -96, 2.1]], w: 3, floor: 'dirt' },
       // stairs from the hollow to the courtyard
-      { pts: [[-10, -117, 1.5], [-9.8, -120.5, 1.5], [-9, -138.6, 7.5]], w: 5, floor: 'stone', stairs: true },
+      { pts: [[-10, -117, 1.5], [-9.8, -120.5, 1.5], [-9, -138, 7.5]], w: 5, floor: 'stone', stairs: true },
       // the hollow up to Crow's Ledge, then on to the courtyard's west wall (barred gate)
       { pts: [[-26, -111, 1.5], [-37, -120, 3.4], [-35, -134, 7.5], [-33, -140, 7.5]], w: 3.5, floor: 'dirt' },
       { pts: [[-27, -146, 7.5], [-21, -149, 7.5], [-14.5, -150, 7.5]], w: 3, floor: 'dirt' },
       // courtyard east to the Stele Garden
       { pts: [[14.5, -155, 7.5], [20, -156, 7.7], [26, -158, 8.5]], w: 3, floor: 'stone' },
       // courtyard to the upper terrace
-      { pts: [[0, -167, 7.5], [0, -169.5, 7.5], [0, -184.5, 12]], w: 6, floor: 'stone', stairs: true },
+      { pts: [[0, -167, 7.5], [0, -169.5, 7.5], [0, -184, 12]], w: 6, floor: 'stone', stairs: true },
       // terrace west pad to the Hermit's Grotto
       { pts: [[-26.5, -196, 12], [-31, -201, 12.3], [-36, -206, 12.5]], w: 2.6, floor: 'dirt' },
     ],
@@ -166,7 +166,7 @@ export const CH1: LayoutDef = {
   breakables: [
     ['barrel', 5, 0], ['crate', 6.2, -1], ['urn', -5, -14], ['rock', 3, -27], ['barrel', -10, -30], ['crate', -11, -31],
     ['urn', -10, -55], ['urn', -10.6, -56.2], ['rock', 2, -64], ['barrel', -13, -64],
-    ['urn', -9, -112], ['barrel', -23, -110], ['crate', -24, -111.3], ['rock', -14, -99],
+    ['urn', -9, -112], ['barrel', -23, -110], ['crate', -24, -111.3], ['rock', -20, -100],
     ['urn', -13, -144], ['urn', -13.5, -145.2], ['barrel', 13, -160], ['barrel', 12.6, -161.3], ['bell', 6, -158], ['crate', -6, -164],
     ['barrel', -15, -200], ['crate', 15, -203], ['urn', 15.5, -201.6], ['bell', -8, -203],
     ['urn', -9, -222], ['urn', 9, -222], ['crate', -10, -246], ['barrel', 10, -246],

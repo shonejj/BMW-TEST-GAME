@@ -213,7 +213,7 @@ const smooth = (a: number, b: number, v: number) => {
 const fbm = (x: number, z: number) => noise2(x * 0.06, z * 0.06) * 0.55 + noise2(x * 0.17 + 7, z * 0.17) * 0.3 + noise2(x * 0.5, z * 0.5 + 3) * 0.15;
 
 /** Max standing-height step between neighbouring 0.5 m cells before it counts as a cliff. */
-const STEP = 0.32;
+const STEP = 0.42;
 
 export class Terrain {
   /** Fine walk grid (0.5 m). */

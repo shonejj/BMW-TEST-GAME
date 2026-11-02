@@ -44,18 +44,18 @@ export interface ChapterDef {
   zones: ChapterZone[];
 }
 
-const w = (kinds: [SpawnKind, number][], elite = false): WaveDef => ({ kinds, elite });
+const w = (kinds: [SpawnKind, number][], elite = false, eliteKind?: SpawnKind): WaveDef => ({ kinds, elite, eliteKind });
 
 export const CHAPTERS: ChapterDef[] = [
   {
     id: 0,
     title: 'Chapter One',
-    place: 'Mountain-Sea Temple',
+    place: 'Black Wind Forest',
     bossKind: 'boss',
     bossName: 'Blackfeather Lord',
-    objective: 'Explore the temple grounds',
+    objective: 'Find the temple beyond the forest',
     intro: [
-      ['', 'For forty days the bells of the Mountain-Sea Temple have been silent.'],
+      ['', 'For forty days the bells of the temple above the Black Wind Forest have been silent.'],
       ['', 'The monks fled. Something crawled up from beneath the stairs, and stayed.'],
       ['Little Monkey', 'Something foul nests in the main hall. Let us see what it is made of.'],
     ],
@@ -70,10 +70,11 @@ export const CHAPTERS: ChapterDef[] = [
       foliage: 0xffffff, ground: 0xffffff, grade: [1, 1, 1], saturation: 1, weather: 'rain', weatherColor: 0x9fb4c4, weatherCount: 650,
     },
     zones: [
-      { name: 'Forest Clearing', level: 1, waves: [w([['ghoul', 3], ['spiderling', 3]]), w([['spiderling', 4], ['ghoul', 2], ['weaver', 1]])] },
-      { name: 'Temple Courtyard', level: 2, waves: [w([['ghoul', 4], ['spiderling', 4], ['weaver', 1]]), w([['armored', 1], ['spiderling', 6]], true), w([['ghoul', 4], ['spiderling', 4], ['weaver', 2]])] },
-      { name: 'Stone Stairs', level: 3, waves: [w([['ghoul', 5], ['spiderling', 4]]), w([['armored', 1], ['ghoul', 3]])] },
-      { name: 'Upper Plaza', level: 4, waves: [w([['ghoul', 6], ['spiderling', 6], ['weaver', 2]]), w([['armored', 2], ['spiderling', 6]]), w([['ghoul', 5], ['spiderling', 5], ['weaver', 2], ['armored', 1]], true)] },
+      { name: 'Black Wind Forest', level: 1, waves: [w([['ghoul', 3], ['spiderling', 3]]), w([['spiderling', 4], ['ghoul', 2], ['weaver', 1]])] },
+      { name: 'Mirror Pond Glade', level: 2, waves: [w([['ghoul', 4], ['spiderling', 4]]), w([['armored', 1], ['spiderling', 5]], true), w([['ghoul', 3], ['weaver', 2]])] },
+      { name: 'Old Pine Hollow', level: 3, waves: [w([['ghoul', 5], ['spiderling', 4], ['weaver', 1]]), w([['armored', 1], ['ghoul', 3]])] },
+      { name: 'Temple Courtyard', level: 4, waves: [w([['ghoul', 6], ['spiderling', 5], ['weaver', 2]]), w([['armored', 2], ['spiderling', 5]]), w([['ghoul', 4], ['weaver', 2], ['armored', 1]], true)] },
+      { name: 'Upper Terrace', level: 5, waves: [w([['ghoul', 6], ['spiderling', 6], ['weaver', 2]]), w([['armored', 2], ['ghoul', 4], ['weaver', 2]], true)] },
       { name: 'Hall of Black Feathers', level: 6, waves: [w([['boss', 1]])] },
     ],
   },
@@ -99,11 +100,13 @@ export const CHAPTERS: ChapterDef[] = [
       bg: 0x2a1c0e, fog: 0x4a3418, fogDensity: 0.024, hemiSky: 0xffc27a, hemiGround: 0x6a4a22, hemiIntensity: 2.1, moon: 0xffd8a0, moonIntensity: 2.1,
       foliage: 0xe0b070, ground: 0xd8b078, grade: [1.1, 1.0, 0.82], saturation: 1.08, weather: 'dust', weatherColor: 0xe8c890, weatherCount: 500,
     },
+    // Yellow Wind roster: wolves, wind archers and sand-buried monks; no spiders. Elites are big wolves.
     zones: [
-      { name: 'Wind-Scoured Ridge', level: 7, waves: [w([['wolf', 5]]), w([['wolf', 4], ['archer', 2]])] },
-      { name: 'Dune Courtyard', level: 8, waves: [w([['wolf', 5], ['archer', 2]]), w([['ghoul', 3], ['wolf', 4]], true), w([['archer', 3], ['wolf', 5], ['armored', 1]])] },
-      { name: 'Sandstone Stairs', level: 9, waves: [w([['wolf', 6], ['archer', 2]]), w([['armored', 2], ['wolf', 4]])] },
-      { name: 'Banner Terrace', level: 10, waves: [w([['wolf', 6], ['archer', 3]]), w([['armored', 2], ['ghoul', 4], ['archer', 2]]), w([['wolf', 6], ['archer', 3], ['armored', 1]], true)] },
+      { name: 'Dune Sea', level: 7, waves: [w([['wolf', 5]]), w([['wolf', 4], ['archer', 2]])] },
+      { name: 'Canyon Narrows', level: 8, waves: [w([['wolf', 5], ['archer', 2]]), w([['ghoul', 3], ['wolf', 4]], true, 'wolf'), w([['archer', 3], ['wolf', 4]])] },
+      { name: 'Switchback Climb', level: 9, waves: [w([['wolf', 6], ['archer', 2]]), w([['ghoul', 4], ['archer', 3]])] },
+      { name: 'Sandstone Fort', level: 10, waves: [w([['wolf', 6], ['archer', 3]]), w([['ghoul', 4], ['wolf', 3], ['archer', 2]]), w([['wolf', 6], ['archer', 3]], true, 'wolf')] },
+      { name: 'Wind-Carved Arches', level: 11, waves: [w([['wolf', 6], ['archer', 4]]), w([['ghoul', 5], ['archer', 3]], true, 'ghoul')] },
       { name: 'Tiger Hall', level: 12, waves: [w([['tiger', 1]])] },
     ],
   },
@@ -129,11 +132,13 @@ export const CHAPTERS: ChapterDef[] = [
       bg: 0x0c1a2a, fog: 0x1a2c42, fogDensity: 0.026, hemiSky: 0xa8d0ff, hemiGround: 0x3a4a62, hemiIntensity: 2.2, moon: 0xcfe4ff, moonIntensity: 2.2,
       foliage: 0xb8d4f0, ground: 0xc8dcf4, grade: [0.88, 1.0, 1.18], saturation: 0.9, weather: 'snow', weatherColor: 0xeaf4ff, weatherCount: 520,
     },
+    // Bone Sanctum roster: bone soldiers, frost witches and white wolves; no spiders. Elites are bone captains.
     zones: [
-      { name: 'Snowbound Path', level: 13, waves: [w([['bone', 5]]), w([['bone', 4], ['frost', 2]])] },
-      { name: 'Frozen Courtyard', level: 14, waves: [w([['bone', 5], ['frost', 2]]), w([['wolf', 4], ['bone', 4]], true), w([['frost', 3], ['bone', 5], ['armored', 1]])] },
-      { name: 'Ice Stairs', level: 15, waves: [w([['bone', 6], ['frost', 2]]), w([['armored', 2], ['bone', 4]])] },
-      { name: 'Ossuary Plaza', level: 16, waves: [w([['bone', 6], ['frost', 3]]), w([['armored', 2], ['wolf', 4], ['frost', 2]]), w([['bone', 6], ['frost', 3], ['armored', 1]], true)] },
+      { name: 'Snowbound Path', level: 13, waves: [w([['bone', 4], ['wolf', 2]]), w([['bone', 4], ['frost', 2]])] },
+      { name: 'Frozen Lake', level: 14, waves: [w([['wolf', 5], ['frost', 2]]), w([['bone', 5], ['wolf', 3]], true, 'bone')] },
+      { name: 'Ice Cliffs', level: 15, waves: [w([['bone', 5], ['frost', 2]]), w([['wolf', 4], ['frost', 3]])] },
+      { name: 'Bone Halls', level: 16, waves: [w([['bone', 6], ['frost', 2]]), w([['bone', 4], ['wolf', 4], ['frost', 2]], true, 'bone')] },
+      { name: 'Ossuary Plaza', level: 17, waves: [w([['bone', 6], ['frost', 3]]), w([['wolf', 5], ['frost', 3], ['bone', 3]], true, 'bone')] },
       { name: 'Sanctum of Bone', level: 18, waves: [w([['bonelady', 1]])] },
     ],
   },
