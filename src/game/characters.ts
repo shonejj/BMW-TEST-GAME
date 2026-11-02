@@ -1,80 +1,119 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { cloneCharacter } from './assets';
+import { cloneSkeleton, getAssets, type BodyAsset, type BodyKind } from './assets';
 
 /**
- * Dressing for the motion-captured mannequin.
+ * Characters are real skinned models: a Quaternius Universal Base Character body (male or female) dressed in
+ * pieces of the Modular Character Outfits, hair styles, or a retargeted KayKit skeleton, all bound to the
+ * Universal Animation Library rig so every mocap clip drives every character.
  *
- * The body is painted with vertex colours chosen per bone and height (fur, wraps, robes...), so that layer
- * bends with the skin. Armour, heads, kilts and robes are modelled in the mannequin's rest pose (T-pose,
- * facing +Z, metres) and baked into skinned meshes, rigidly weighted to the bone each piece rides on. A
- * character therefore costs one draw call per finish (matte, cloth, metal, glow) however detailed it is,
- * and every copy of a design shares the same geometry.
+ * A design ("look") picks the pieces and colours them:
+ * - `tint` multiplies a piece's texture (keeps its shading and pattern);
+ * - `dye` recolours it: each vertex gets the colour that turns the texel under it into the dye colour, so the
+ *   piece takes the new colour exactly while the texture still adds its folds, seams and wear; `only: 'green'`
+ *   dyes just the cloth of the Ranger set and leaves its leather and buckles alone;
+ * - the base body is dyed per vertex by a painter (fur, stripes, rot, bone-white), so the skin texture's
+ *   muscles and face survive under any colour.
+ * Body skin hidden under clothing is cut away (no poke-through). Bespoke accessories (crowns, muzzles, horns,
+ * wings) are modelled in the rest pose and baked as rigid pieces riding on a bone. Every piece is merged into
+ * one skinned mesh per material, so a character costs a handful of draw calls, and copies of a design share
+ * their geometry.
  */
 
 export type BodyPainter = (bone: string, p: THREE.Vector3, out: THREE.Color) => void;
 export type Finish = 'matte' | 'cloth' | 'metal' | 'armor' | 'glow';
 const FINISHES: Finish[] = ['matte', 'cloth', 'metal', 'armor', 'glow'];
 
-/** Rest-pose measurements shared by every copy of the mannequin. */
+/** One modular piece of a look (an outfit piece, a hair style or a skeleton part), by its node name. */
+export interface PartSpec {
+  name: string;
+  /** Multiplies the texture (or the flat colour of untextured pieces such as hair). */
+  tint?: number;
+  /** Recolours the piece (see the file comment). */
+  dye?: number;
+  /** Which texels the dye applies to: everything, or only the green cloth of the Ranger set. */
+  only?: 'all' | 'green';
+}
+
+export interface Look {
+  body: BodyKind;
+  /** Base body: false hides it entirely (skeletons); otherwise its skin is dyed by `painter` or tinted by `skin`. */
+  showBody?: boolean;
+  skin?: number;
+  painter?: BodyPainter;
+  /** Eyes (texture colour or a tint) and eyebrows of the base face. */
+  eyes?: number | false;
+  brows?: number | false;
+  parts: PartSpec[];
+}
+
+/** Rest-pose measurements of one base body. */
 export interface Rest {
-  /** Box of the vertices each bone dominates. */
+  /** Box of the body vertices each bone dominates. */
   boxes: Map<string, THREE.Box3>;
   boneIndex: Map<string, number>;
   /** Rest-pose world position of a bone (a fresh vector). */
   pos(bone: string): THREE.Vector3;
-  /** Bind matrix for geometry authored in rest-pose world space. */
+  /** Rest-pose world space -> body mesh space (the space every baked piece lives in). */
   bindFix: THREE.Matrix4;
-  vertices: { pts: THREE.Vector3[]; bones: string[] }[];
+  vertices: { pts: THREE.Vector3[]; bones: string[] };
+  body: BodyKind;
 }
 
-let rest: Rest | null = null;
+const rests = new Map<BodyKind, Rest>();
 
-export function getRest(): Rest {
-  if (rest) return rest;
-  const { root, bones, skinned } = cloneCharacter();
-  root.updateMatrixWorld(true);
-  const vertices = skinned.map((m) => {
-    m.skeleton.update();
-    const pos = m.geometry.getAttribute('position');
-    const si = m.geometry.getAttribute('skinIndex');
-    const sw = m.geometry.getAttribute('skinWeight');
-    const pts: THREE.Vector3[] = [];
-    const names: string[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      const v = new THREE.Vector3().fromBufferAttribute(pos, i);
-      m.applyBoneTransform(i, v);
-      pts.push(v.applyMatrix4(m.matrixWorld));
-      let best = 0;
-      for (let k = 1; k < 4; k++) if (sw.getComponent(i, k) > sw.getComponent(i, best)) best = k;
-      names.push(m.skeleton.bones[si.getComponent(i, best)].name);
-    }
-    return { pts, bones: names };
-  });
-  const boxes = new Map<string, THREE.Box3>();
-  for (const { pts, bones: names } of vertices) {
-    pts.forEach((p, i) => {
-      let b = boxes.get(names[i]);
-      if (!b) boxes.set(names[i], (b = new THREE.Box3()));
-      b.expandByPoint(p);
-    });
+/** Dominant bone of every vertex of a skinned mesh. */
+function dominantBones(m: THREE.SkinnedMesh) {
+  const si = m.geometry.getAttribute('skinIndex');
+  const sw = m.geometry.getAttribute('skinWeight');
+  const names: string[] = [];
+  for (let i = 0; i < si.count; i++) {
+    let best = 0;
+    for (let k = 1; k < 4; k++) if (sw.getComponent(i, k) > sw.getComponent(i, best)) best = k;
+    names.push(m.skeleton.bones[si.getComponent(i, best)].name);
   }
-  const skeleton = skinned[0].skeleton;
-  const boneIndex = new Map(skeleton.bones.map((b, i) => [b.name, i]));
-  // Skinning maps bind space through boneWorld * boneInverse; at rest that product is the same matrix for
-  // every bone (bind space -> world). Its inverse lets world-space geometry use the same skeleton.
-  const pelvis = boneIndex.get('pelvis')!;
-  const bindFix = skeleton.bones[pelvis].matrixWorld.clone().multiply(skeleton.boneInverses[pelvis]).invert();
-  rest = {
-    boxes, boneIndex, bindFix, vertices,
-    pos: (b) => bones.get(b)!.getWorldPosition(new THREE.Vector3()),
+  return names;
+}
+
+/** Rest-pose world positions of a skinned mesh's vertices. */
+function restPoints(m: THREE.SkinnedMesh) {
+  const pos = m.geometry.getAttribute('position');
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const v = new THREE.Vector3().fromBufferAttribute(pos, i);
+    m.applyBoneTransform(i, v);
+    pts.push(v.applyMatrix4(m.matrixWorld));
+  }
+  return pts;
+}
+
+export function getRest(kind: BodyKind = 'male'): Rest {
+  let r = rests.get(kind);
+  if (r) return r;
+  const a = getAssets().bodies[kind];
+  const body = a.body;
+  const pts = restPoints(body);
+  const names = dominantBones(body);
+  const boxes = new Map<string, THREE.Box3>();
+  pts.forEach((p, i) => {
+    let b = boxes.get(names[i]);
+    if (!b) boxes.set(names[i], (b = new THREE.Box3()));
+    b.expandByPoint(p);
+  });
+  const boneIndex = new Map(body.skeleton.bones.map((b, i) => [b.name, i]));
+  r = {
+    boxes, boneIndex, body: kind,
+    bindFix: new THREE.Matrix4(),
+    vertices: { pts, bones: names },
+    pos: (b) => body.skeleton.getBoneByName(b)!.getWorldPosition(new THREE.Vector3()),
   };
-  return rest;
+  rests.set(kind, r);
+  return r;
 }
 
 interface Piece { bone: string; geo: THREE.BufferGeometry; finish: Finish; color: number | null; matrix: THREE.Matrix4 }
 
-/** Collects costume pieces for a design. */
+/** Collects bespoke accessory pieces for a design. */
 export class Outfit {
   readonly pieces: Piece[] = [];
   private readonly m = new THREE.Matrix4();
@@ -98,44 +137,148 @@ export class Outfit {
   }
 }
 
-interface Baked { body: THREE.BufferGeometry; parts: Map<Finish, THREE.BufferGeometry> }
-const baked = new Map<string, Baked>();
+// ---------------------------------------------------------------------------
+// Texture sampling (for dyes)
+// ---------------------------------------------------------------------------
 
-function paintedBody(painter: BodyPainter, skinned: THREE.SkinnedMesh[]) {
-  const r = getRest();
-  const c = new THREE.Color();
-  const geos = skinned.map((m, mi) => {
-    const src = m.geometry;
-    const n = src.getAttribute('position').count;
-    const g = new THREE.BufferGeometry();
-    const copy = (name: string, size: number) => {
-      const a = src.getAttribute(name);
-      const out = new Float32Array(n * size);
-      for (let i = 0; i < n; i++) for (let k = 0; k < size; k++) out[i * size + k] = a.getComponent(i, k);
-      g.setAttribute(name, new THREE.BufferAttribute(out, size));
-    };
-    copy('position', 3);
-    copy('normal', 3);
-    copy('skinIndex', 4);
-    copy('skinWeight', 4);
-    const col = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      painter(r.vertices[mi].bones[i], r.vertices[mi].pts[i], c);
-      col.set([c.r, c.g, c.b], i * 3);
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.setIndex(src.index!.clone());
-    return g;
-  });
-  return mergeGeometries(geos)!;
+const pixels = new WeakMap<object, { data: Uint8ClampedArray; w: number; h: number } | null>();
+
+function pixelsOf(tex: THREE.Texture) {
+  const img = tex.image as (CanvasImageSource & { width: number; height: number }) | undefined;
+  if (!img) return null;
+  let p = pixels.get(img);
+  if (p !== undefined) return p;
+  try {
+    const w = Math.min(256, img.width), h = Math.min(256, img.height);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.drawImage(img, 0, 0, w, h);
+    p = { data: g.getImageData(0, 0, w, h).data, w, h };
+  } catch {
+    p = null;
+  }
+  pixels.set(img, p);
+  return p;
 }
 
-function bake(o: Outfit) {
-  const r = getRest();
+/** Linear colour of the texture around (u, v) (a 3x3 average), or white if it can't be read. */
+function texel(tex: THREE.Texture | null, u: number, v: number, out: THREE.Color) {
+  const p = tex ? pixelsOf(tex) : null;
+  if (!p) return out.setRGB(1, 1, 1);
+  const x0 = Math.floor((u - Math.floor(u)) * p.w), y0 = Math.floor((v - Math.floor(v)) * p.h);
+  let r = 0, g = 0, b = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const x = Math.min(p.w - 1, Math.max(0, x0 + dx)), y = Math.min(p.h - 1, Math.max(0, y0 + dy));
+    const i = (y * p.w + x) * 4;
+    r += p.data[i];
+    g += p.data[i + 1];
+    b += p.data[i + 2];
+  }
+  return out.setRGB(r / 2295, g / 2295, b / 2295, THREE.SRGBColorSpace);
+}
+
+const isGreen = (c: THREE.Color) => c.g > c.r * 1.15 && c.g > c.b * 1.1;
+
+/** Vertex colour that turns `tex` into `target` under multiplication. */
+function dyeColor(tex: THREE.Color, target: THREE.Color, out: THREE.Color) {
+  return out.setRGB(
+    Math.min(4, target.r / Math.max(0.02, tex.r)),
+    Math.min(4, target.g / Math.max(0.02, tex.g)),
+    Math.min(4, target.b / Math.max(0.02, tex.b)),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Baking
+// ---------------------------------------------------------------------------
+
+/** Body bones each outfit piece covers: body skin dominated by these bones is cut away under it. */
+const COVERS: Record<string, string[]> = {
+  Body: ['spine_01', 'spine_02', 'spine_03'],
+  Arms: ['upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r', 'FINGERS'],
+  Legs: ['pelvis', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r'],
+  Feet: ['foot_l', 'foot_r', 'ball_l', 'ball_r'],
+  Skel: ['ALL'],
+};
+const FINGER = /thumb|index|middle|ring|pinky/;
+
+function coveredBones(parts: PartSpec[]) {
+  const s = new Set<string>();
+  for (const p of parts) {
+    for (const [k, bones] of Object.entries(COVERS)) {
+      if (k === 'Skel' ? p.name.startsWith('Skel') : p.name.endsWith('_' + k)) for (const b of bones) s.add(b);
+    }
+  }
+  return s;
+}
+
+/** Baked geometry per material key: a texture uuid (textured pieces), 'flat' (hair), 'glow', or a finish. */
+interface Baked { groups: Map<string, { geo: THREE.BufferGeometry; map: THREE.Texture | null; glow: boolean }> }
+const baked = new Map<string, Baked>();
+
+const _v = new THREE.Vector3(), _n = new THREE.Vector3(), _c = new THREE.Color(), _t = new THREE.Color(), _d = new THREE.Color();
+const _nm = new THREE.Matrix3();
+
+/** Moves a source piece into body mesh space and colours it. Returns null if nothing of it is left. */
+function bakePiece(a: BodyAsset, m: THREE.SkinnedMesh, colorAt: (i: number, tex: THREE.Color, out: THREE.Color) => void, keepTri?: (i0: number, i1: number, i2: number) => boolean) {
+  const src = m.geometry;
+  const n = src.getAttribute('position').count;
+  const toBody = m.matrixWorld.clone();
+  _nm.getNormalMatrix(toBody);
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+  const uvAttr = src.getAttribute('uv');
+  const uv = uvAttr ? new Float32Array(n * 2) : null;
+  const P = src.getAttribute('position'), N = src.getAttribute('normal'), SI = src.getAttribute('skinIndex'), SW = src.getAttribute('skinWeight');
+  const remap = m.skeleton.bones.map((b) => a.body.skeleton.bones.findIndex((x) => x.name === b.name));
+  const material = m.material as THREE.MeshStandardMaterial;
+  const map = material.map ?? null;
+  for (let i = 0; i < n; i++) {
+    _v.fromBufferAttribute(P, i);
+    m.applyBoneTransform(i, _v);
+    _v.applyMatrix4(toBody);
+    pos.set([_v.x, _v.y, _v.z], i * 3);
+    _n.fromBufferAttribute(N, i).applyMatrix3(_nm).normalize();
+    nor.set([_n.x, _n.y, _n.z], i * 3);
+    for (let k = 0; k < 4; k++) {
+      si[i * 4 + k] = Math.max(0, remap[SI.getComponent(i, k)]);
+      sw[i * 4 + k] = SW.getComponent(i, k);
+    }
+    if (uv && uvAttr) {
+      uv[i * 2] = uvAttr.getX(i);
+      uv[i * 2 + 1] = uvAttr.getY(i);
+      texel(map, uv[i * 2], uv[i * 2 + 1], _t);
+    } else _t.setRGB(1, 1, 1);
+    colorAt(i, _t, _c);
+    col.set([_c.r, _c.g, _c.b], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('skinIndex', new THREE.BufferAttribute(si, 4));
+  g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+  // Untextured pieces still get a uv so they merge with anything.
+  g.setAttribute('uv', new THREE.BufferAttribute(uv ?? new Float32Array(n * 2), 2));
+  const idx = src.index!;
+  const out: number[] = [];
+  for (let t = 0; t < idx.count; t += 3) {
+    const i0 = idx.getX(t), i1 = idx.getX(t + 1), i2 = idx.getX(t + 2);
+    if (!keepTri || keepTri(i0, i1, i2)) out.push(i0, i1, i2);
+  }
+  if (!out.length) return null;
+  g.setIndex(out);
+  return { geo: g, map, glow: /glow/i.test(material.name) };
+}
+
+function bakeAccessories(a: BodyAsset, r: Rest, o: Outfit) {
   const groups = new Map<Finish, THREE.BufferGeometry[]>();
   const c = new THREE.Color();
+  const toBody = new THREE.Matrix4();
   for (const p of o.pieces) {
-    const g = p.geo.clone().applyMatrix4(p.matrix);
+    const g = p.geo.clone().applyMatrix4(p.matrix).applyMatrix4(toBody);
     const n = g.getAttribute('position').count;
     const out = new THREE.BufferGeometry();
     out.setAttribute('position', g.getAttribute('position'));
@@ -148,6 +291,7 @@ function bake(o: Outfit) {
       col = new THREE.BufferAttribute(arr, 3);
     }
     out.setAttribute('color', col);
+    out.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     const idx = r.boneIndex.get(p.bone);
     if (idx === undefined) throw new Error(`No bone ${p.bone}`);
     const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
@@ -159,10 +303,75 @@ function bake(o: Outfit) {
     if (!groups.has(p.finish)) groups.set(p.finish, []);
     groups.get(p.finish)!.push(out);
   }
-  const parts = new Map<Finish, THREE.BufferGeometry>();
-  for (const [f, list] of groups) parts.set(f, mergeGeometries(list)!);
-  return parts;
+  return groups;
 }
+
+function bake(look: Look, design?: (o: Outfit, r: Rest) => void): Baked {
+  const a = getAssets().bodies[look.body];
+  const r = getRest(look.body);
+  const lists = new Map<string, { geos: THREE.BufferGeometry[]; map: THREE.Texture | null; glow: boolean }>();
+  const add = (key: string, b: { geo: THREE.BufferGeometry; map: THREE.Texture | null; glow: boolean } | null) => {
+    if (!b) return;
+    const k = b.glow ? 'glow' : b.map ? b.map.uuid : 'flat';
+    let l = lists.get(k);
+    if (!l) lists.set(k, (l = { geos: [], map: b.map, glow: b.glow }));
+    l.geos.push(b.geo);
+    void key;
+  };
+  // Base body: skin under clothing is cut away; the rest is dyed by the painter or tinted.
+  if (look.showBody !== false) {
+    const covered = coveredBones(look.parts);
+    const bones = r.vertices.bones;
+    const hidden = (i: number) => {
+      const b = bones[i];
+      return covered.has('ALL') || covered.has(b) || (FINGER.test(b) && covered.has('FINGERS'));
+    };
+    const skin = new THREE.Color(look.skin ?? 0xffffff);
+    add('Body', bakePiece(a, a.body, (i, tex, out) => {
+      if (look.painter) {
+        look.painter(bones[i], r.vertices.pts[i], _d);
+        dyeColor(tex, _d, out);
+      } else out.copy(skin);
+    }, (i0, i1, i2) => !(hidden(i0) && hidden(i1) && hidden(i2))));
+    if (look.eyes !== false) {
+      const e = new THREE.Color(look.eyes ?? 0xffffff);
+      for (const m of a.pieces.get('Eyes')!) add('Eyes', bakePiece(a, m, (_i, _tex, out) => out.copy(e)));
+    }
+    if (look.brows !== false) {
+      const b = new THREE.Color(look.brows ?? 0xffffff);
+      for (const m of a.pieces.get('Brows')!) add('Brows', bakePiece(a, m, (_i, _tex, out) => out.copy(b)));
+    }
+  }
+  for (const p of look.parts) {
+    const list = a.pieces.get(p.name);
+    if (!list) throw new Error(`No piece ${p.name} on the ${look.body} body`);
+    const tint = new THREE.Color(p.tint ?? 0xffffff);
+    const dye = p.dye !== undefined ? new THREE.Color(p.dye) : null;
+    for (const m of list) {
+      // Bare skin inside a sleeve piece keeps the body's look (the painter, or the skin tint).
+      const skinPart = /Regular_/.test((m.material as THREE.Material).name);
+      add(p.name, bakePiece(a, m, (i, tex, out) => {
+        if (skinPart) {
+          if (look.painter) { look.painter('lowerarm_l', _v.set(0, 1.4, 0), _d); dyeColor(tex, _d, out); } else out.set(look.skin ?? 0xffffff);
+        } else if (dye && (p.only !== 'green' || isGreen(tex))) dyeColor(tex, dye, out).multiply(tint);
+        else out.copy(tint);
+        void i;
+      }));
+    }
+  }
+  const groups: Baked['groups'] = new Map();
+  for (const [k, l] of lists) groups.set(k, { geo: mergeGeometries(l.geos)!, map: l.map, glow: l.glow });
+  if (design) {
+    const o = new Outfit();
+    design(o, r);
+    for (const [f, list] of bakeAccessories(a, r, o)) groups.set(f, { geo: mergeGeometries(list)!, map: null, glow: f === 'glow' });
+  }
+  return { groups };
+}
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
 
 export interface CharacterMats {
   matte: THREE.MeshToonMaterial;
@@ -171,11 +380,13 @@ export interface CharacterMats {
   /** Recolourable armour plates (their vertex colour is white; the material colour is the paint). */
   armor: THREE.MeshPhongMaterial;
   glow: THREE.MeshBasicMaterial;
+  /** Textured skin and outfit materials, one per texture (created as looks need them). */
+  tex: Map<string, THREE.MeshToonMaterial>;
 }
 
 /** Three-band light ramp for cel shading: deep shadow, half-tone, lit. */
 let ramp: THREE.DataTexture | null = null;
-function toonRamp() {
+export function toonRamp() {
   if (!ramp) {
     ramp = new THREE.DataTexture(new Uint8Array([70, 70, 70, 255, 150, 150, 150, 255, 255, 255, 255, 255]), 3, 1);
     ramp.minFilter = ramp.magFilter = THREE.NearestFilter;
@@ -215,62 +426,82 @@ export function makeMats(): CharacterMats {
     metal: withRim(new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0x8a7a5a }), 0.5),
     armor: withRim(new THREE.MeshPhongMaterial({ vertexColors: true, color: 0x4a2218, shininess: 60, specular: 0x6a5a4a }), 0.5),
     glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
+    tex: new Map(),
   };
 }
 
+function texMat(mats: CharacterMats, key: string, map: THREE.Texture | null) {
+  let m = mats.tex.get(key);
+  if (!m) {
+    // Outfit cloth is single-sided in the source; DoubleSide keeps hoods and sleeves solid from inside.
+    m = withRim(new THREE.MeshToonMaterial({ map, vertexColors: true, gradientMap: toonRamp(), side: THREE.DoubleSide }));
+    mats.tex.set(key, m);
+  }
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Characters
+// ---------------------------------------------------------------------------
+
 export interface Character {
-  /** The mannequin's scene root; the skeleton animates inside it. */
+  /** The armature's scene root; the skeleton animates inside it. */
   model: THREE.Group;
   bones: Map<string, THREE.Bone>;
   meshes: THREE.SkinnedMesh[];
   mats: CharacterMats;
+  /** Every material that should flash on a hit. */
+  flashMats: (THREE.Material & { emissive: THREE.Color; emissiveIntensity: number })[];
   rest: Rest;
   /** Parents an object modelled in rest-pose world space to a bone (for pieces animated in code). */
   attach(bone: string, o: THREE.Object3D): THREE.Object3D;
+  /** Re-dresses the character (equipment changes); `key` names the look so its bake is shared and cached. */
+  dress(key: string, look: Look, design?: (o: Outfit, r: Rest) => void): void;
 }
 
-/** A dressed, animatable copy of the mannequin. `design` runs once per key; later copies reuse the bake. */
-export function buildCharacter(key: string, painter: BodyPainter, design: (o: Outfit, r: Rest) => void, mats = makeMats()): Character {
-  const r = getRest();
-  const { root, bones, skinned } = cloneCharacter();
-  let b = baked.get(key);
-  if (!b) {
-    const o = new Outfit();
-    design(o, r);
-    b = { body: paintedBody(painter, skinned), parts: bake(o) };
-    baked.set(key, b);
-  }
-  const skeleton = skinned[0].skeleton;
-  const parent = skinned[0].parent!;
-  const body = new THREE.SkinnedMesh(b.body, mats.matte);
-  body.position.copy(skinned[0].position);
-  body.quaternion.copy(skinned[0].quaternion);
-  body.scale.copy(skinned[0].scale);
-  parent.add(body);
-  body.bind(skeleton, skinned[0].bindMatrix);
-  for (const m of skinned) m.removeFromParent();
-  const meshes: THREE.SkinnedMesh[] = [body];
-  for (const f of FINISHES) {
-    const g = b.parts.get(f);
-    if (!g) continue;
-    const m = new THREE.SkinnedMesh(g, mats[f]);
-    parent.add(m);
-    m.bind(skeleton, r.bindFix);
-    meshes.push(m);
-  }
-  for (const m of meshes) {
-    m.castShadow = true;
-    // Animated bounds move away from the bind-pose sphere; a handful of characters is cheap to draw.
-    m.frustumCulled = false;
-  }
-  root.updateMatrixWorld(true);
-  return {
-    model: root, bones, meshes, mats, rest: r,
+/**
+ * A dressed, animatable character. `design` adds bespoke accessories; it and the look's bake run once per
+ * key, and later copies reuse the geometry.
+ */
+export function buildCharacter(key: string, look: Look, design?: (o: Outfit, r: Rest) => void, mats = makeMats()): Character {
+  const { root, bones, skeleton, asset } = cloneSkeleton(look.body);
+  const r = getRest(look.body);
+  const armature = root.children[0];
+  // Clips set the pelvis height of the animation library's mannequin; lift the armature so feet stay on the ground.
+  armature.position.y += asset.lift;
+  const meshes: THREE.SkinnedMesh[] = [];
+  const ch: Character = {
+    model: root, bones, meshes, mats, rest: r, flashMats: [],
     attach: (bone, o) => {
+      // Accessories are modelled at rest with the feet on the ground; the lift moves them with the armature.
+      root.updateMatrixWorld(true);
+      o.position.y += asset.lift;
       bones.get(bone)!.attach(o);
       return o;
     },
+    dress: (k, lk, ds) => {
+      let b = baked.get(k);
+      if (!b) baked.set(k, (b = bake(lk, ds)));
+      for (const m of meshes) m.removeFromParent();
+      meshes.length = 0;
+      for (const [gk, g] of b.groups) {
+        const finish = FINISHES.includes(gk as Finish) ? (gk as Finish) : null;
+        const mat = finish ? mats[finish] : g.glow ? mats.glow : texMat(mats, gk, g.map);
+        const m = new THREE.SkinnedMesh(g.geo, mat);
+        // Baked pieces live in rest-pose world space: identity under the root (the armature carries the lift).
+        root.add(m);
+        m.bind(skeleton, new THREE.Matrix4());
+        m.castShadow = true;
+        // Animated bounds move away from the bind-pose sphere; a handful of characters is cheap to draw.
+        m.frustumCulled = false;
+        meshes.push(m);
+      }
+      ch.flashMats = [mats.matte, mats.cloth, mats.metal, ...mats.tex.values()];
+      root.updateMatrixWorld(true);
+    },
   };
+  ch.dress(key, look, design);
+  return ch;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +512,19 @@ export function buildCharacter(key: string, painter: BodyPainter, design: (o: Ou
 export function hashNoise(x: number, y: number, z: number) {
   const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
   return (s - Math.floor(s)) * 2 - 1;
+}
+
+/** Smooth value noise in [-1, 1] (trilinear blend of hashNoise on a unit lattice). */
+export function smoothNoise(x: number, y: number, z: number) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const f = (t: number) => t * t * (3 - 2 * t);
+  const fx = f(x - xi), fy = f(y - yi), fz = f(z - zi);
+  let s = 0;
+  for (let dz = 0; dz <= 1; dz++) for (let dy = 0; dy <= 1; dy++) for (let dx = 0; dx <= 1; dx++) {
+    const w = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz);
+    s += w * hashNoise(xi + dx, yi + dy, zi + dz);
+  }
+  return s;
 }
 
 /** Tube along a curve whose radius tapers from r0 to r1. */

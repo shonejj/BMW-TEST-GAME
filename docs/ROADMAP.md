@@ -12,10 +12,10 @@ built, checked in the browser and deployed to GitHub Pages after each merge.
 - [x] Music: no wall-to-wall score. Ambient beds per chapter (rain, wind, birds, water, cave), music only for combat/boss/story beats, silence between
 
 ## Track B — Characters and enemies
-- [ ] Research free/CC0 rigged characters (Quaternius Universal Base Characters / modular outfits, KayKit, etc.) compatible with the UAL rig
-- [ ] Hero: real skinned body with proper armour pieces, cloth, hair/fur; no box-built limbs
-- [ ] Enemies and bosses: real skinned models per kind; no box primitives
-- [ ] Equipment visibly changes the model (head, chest, hands, legs, feet, weapon)
+- [x] Research free/CC0 rigged characters (Quaternius Universal Base Characters / modular outfits, KayKit, etc.) compatible with the UAL rig
+- [x] Hero: real skinned body with proper armour pieces, cloth, hair/fur; no box-built limbs
+- [x] Enemies and bosses: real skinned models per kind; no box primitives
+- [x] Equipment visibly changes the model (head, chest, hands, legs, feet, weapon)
 
 ## Track C — World and level design
 - [x] One hand-planned map per chapter (not one map re-tinted): distinct layout, paths, elevation (climb up ridges, stairs, cliffs)

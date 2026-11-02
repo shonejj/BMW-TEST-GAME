@@ -534,9 +534,8 @@ abstract class Humanoid extends Enemy {
     this.lift.scale.setScalar(scale);
     this.lift.add(ch.model);
     this.root.add(this.lift);
-    const m = ch.mats;
-    for (const mat of [m.matte, m.cloth, m.metal]) mat.userData.unique = true;
-    this.registerFlashMats([m.matte, m.cloth, m.metal]);
+    for (const mat of ch.flashMats) mat.userData.unique = true;
+    this.registerFlashMats(ch.flashMats);
     this.anim = new Animator(ch.model, loco);
     // Settle into the idle pose now: enemies spawned during a cutscene don't update until it ends.
     this.anim.update(0, 0);

@@ -71,16 +71,20 @@ from the reference video. See *Credits* below.
 
 ### Credits
 
-- **Quaternius** (CC0): Universal Animation Library 1 & 2 (mannequin and mocap clips), Stylized Nature MegaKit
-  (trees, rocks, ferns, grass, mushrooms and flowers for every chapter).
-- **flo-bit** — *Low Poly Nature Pack* (CC0): snow-capped pines and firs, bare trees and stumps for the Frozen Bone Sanctum.
-- **Kay Lousberg (KayKit)** — *Dungeon Remastered* (CC0): chests (normal and gold), pillars and rubble.
+- **Quaternius** (CC0): Universal Animation Library 1 & 2 (mocap clips), Universal Base Characters (the male and
+  female body every character is built on), Modular Character Outfits &ndash; Fantasy (armour, robes, boots, hoods,
+  bracers) and the hair styles, Stylized Nature MegaKit (trees, rocks, ferns, grass, mushrooms and flowers for every
+  chapter). All the character packs share one rig, so the clips drive every character.
+- **flo-bit** &mdash; *Low Poly Nature Pack* (CC0): snow-capped pines and firs, bare trees and stumps for the Frozen Bone Sanctum.
+- **KayKit** by Kay Lousberg (CC0): *Dungeon Remastered* &mdash; chests (normal and gold), pillars and rubble;
+  *Character Pack: Skeletons* &mdash; the skeleton warrior and mage, retargeted onto the Quaternius rig by
+  `tools/build-assets.mjs` so they use the same animations.
 - **Kenney** and **OpenGameArt** authors incl. rubberduck, artisticdude, qubodup, LokiF, SubspaceAudio (CC0): sound effects, via
   `Legerdo/open-game-sfx-index`.
 - **Versilian Community Sample Library** (CC0): dan tranh zither, drums, gong, ocarina; **aliexpress-erhu** sample set (CC0).
   `tools/build-audio.py` trims, normalises and encodes them.
-- `tools/build-assets.mjs` picks the clips and props, simplifies them and compresses them with meshopt into
-  `src/assets/models/*.glb`. The build inlines those files, so the single-file offline version still works.
+- `tools/build-assets.mjs` picks the clips, bodies, outfit pieces and props, retargets what needs it, simplifies
+  them and compresses them with meshopt and webp into `src/assets/models/*.glb`. The build inlines those files, so the single-file offline version still works.
 
 ## Develop
 

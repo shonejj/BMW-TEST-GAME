@@ -1,25 +1,35 @@
-// Builds the compressed glTF assets in src/assets/models from the CC0 source packs (see CREDITS.md).
+// Builds the compressed glTF assets in src/assets/models from the CC0 source packs (credits in README.md).
 //
-//   node tools/build-assets.mjs <quaternius-dir>
+//   node tools/build-assets.mjs <quaternius-dir> [<ubc-dir> <kaykit-skeletons-dir>] [anims|bodies|nature|all]
 //
-// <quaternius-dir> holds universal-animation-library, universal-animation-library-2 and
-// stylized-nature-megakit as downloaded from quaternius.com. The outputs are committed, so this only needs to
-// run when the clip or prop selection changes.
-import { NodeIO } from '@gltf-transform/core';
+// <quaternius-dir> holds universal-animation-library, universal-animation-library-2 and stylized-nature-megakit
+// as downloaded from quaternius.com.
+// <ubc-dir> holds the Quaternius Universal Base Characters (characters/Superhero_*.glb), Modular Character
+// Outfits - Fantasy (outfits/{Male,Female}_{Peasant,Ranger}.glb) and hair (hair/Hair_*.glb), all on the
+// Universal Animation Library rig (a CC0 mirror is github.com/Dallolz/moorfall-assets).
+// <kaykit-skeletons-dir> is the KayKit Character Pack: Skeletons (Characters/gltf/Skeleton_*.glb).
+// The outputs are committed, so this only needs to run when the selection changes.
+import { Document, NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, prune, resample, weld, meshopt, textureCompress, flatten, join, simplify } from '@gltf-transform/functions';
+import {
+  dedup, prune, resample, weld, meshopt, textureCompress, flatten, join, simplify, mergeDocuments, simplifyPrimitive,
+  weldPrimitive,
+} from '@gltf-transform/functions';
 import { MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
-import { mkdirSync, statSync } from 'node:fs';
+import { mkdirSync, statSync, existsSync } from 'node:fs';
 import { join as pjoin } from 'node:path';
 
-const SRC = process.argv[2];
-if (!SRC) throw new Error('usage: node tools/build-assets.mjs <quaternius-dir>');
+const args = process.argv.slice(2);
+const which = ['anims', 'bodies', 'nature', 'all'].includes(args[args.length - 1]) ? args.pop() : 'all';
+const [SRC, UBC, KAYKIT] = args;
+if (!SRC) throw new Error('usage: node tools/build-assets.mjs <quaternius-dir> [<ubc-dir> <kaykit-skeletons-dir>] [anims|bodies|nature|all]');
 const OUT = new URL('../src/assets/models/', import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 
 await MeshoptEncoder.ready;
 await MeshoptSimplifier.ready;
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.encoder': MeshoptEncoder });
+const sharp = (await import('sharp')).default;
 
 /** Clips kept from each library, renamed for the game. */
 const UAL1 = {
@@ -54,13 +64,26 @@ function dropOrphanAccessors(doc) {
   for (const a of root.listAccessors()) if (!used.has(a)) a.dispose();
 }
 
-async function characters() {
+/** One buffer per document (merges leave one per source). */
+function singleBuffer(doc) {
+  const [buffer, ...rest] = doc.getRoot().listBuffers();
+  for (const a of doc.getRoot().listAccessors()) a.setBuffer(buffer);
+  for (const b of rest) b.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// Animation clips: the UAL skeleton (no mesh) with the selected mocap clips.
+// ---------------------------------------------------------------------------
+
+async function anims() {
   const doc = await io.read(pjoin(SRC, 'universal-animation-library/Unreal-Godot/UAL1.glb'));
   const lib2 = await io.read(pjoin(SRC, 'universal-animation-library-2/Unreal-Godot/UAL2.glb'));
   const root = doc.getRoot();
   const nodes = new Map(root.listNodes().map((n) => [n.getName(), n]));
   const buffer = root.listBuffers()[0];
 
+  // The bodies live in their own files; this one only carries the clips (bound to bones by name at runtime).
+  for (const n of root.listNodes()) if (n.getMesh()) n.dispose();
   for (const anim of root.listAnimations()) {
     const name = UAL1[anim.getName()];
     if (name) anim.setName(name); else anim.dispose();
@@ -92,12 +115,298 @@ async function characters() {
     }
   }
   dropOrphanAccessors(doc);
-  // Seen from a top-down camera, ~40% of the mannequin's triangles is plenty, and every enemy pays for it.
-  await doc.transform(prune(), dedup(), resample({ tolerance: 2e-4 }), weld(),
-    simplify({ simplifier: MeshoptSimplifier, ratio: 0.4, error: 0.002 }),
-    meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
-  await io.write(pjoin(OUT, 'characters.glb'), doc);
+  await doc.transform(prune({ keepLeaves: true }), dedup(), resample({ tolerance: 2e-4 }), meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+  await io.write(pjoin(OUT, 'anims.glb'), doc);
 }
+
+// ---------------------------------------------------------------------------
+// Bodies: a base character with every outfit piece and hair style bound to its skeleton.
+// ---------------------------------------------------------------------------
+
+/** Attributes the game's materials read; the rest (empty colour sets, lightmap UVs) is dropped. */
+const KEEP_ATTR = new Set(['POSITION', 'NORMAL', 'TEXCOORD_0', 'JOINTS_0', 'WEIGHTS_0']);
+
+/**
+ * Pieces per body: output node name -> source node name, with a simplification ratio. Seen from a high camera
+ * through a pixelating post pass, roughly half the authored triangles is plenty, and every enemy pays for them.
+ */
+function partList(g) {
+  const G = g === 'male' ? 'Male' : 'Female';
+  const ratio = { Feet: 0.25, Arms_Bracer: 0.35, Arms: 0.5, Body: 0.55, Legs: 0.7, Head_Hood: 0.6, Acc_Pauldron: 0.6, Body_Belt_1: 0.5, Body_Belt_2: 0.5 };
+  const parts = [];
+  for (const set of ['Peasant', 'Ranger']) {
+    const pieces = set === 'Peasant' ? ['Arms', 'Body', 'Feet', 'Legs'] : ['Acc_Pauldron', 'Arms', 'Arms_Bracer', 'Body', 'Body_Belt_1', 'Body_Belt_2', 'Feet', 'Head_Hood', 'Legs'];
+    for (const p of pieces) {
+      let src = `${G}_${set}_${p}`;
+      if (p === 'Feet' && set === 'Ranger' && g === 'male') src += '_Boots';
+      if (p === 'Acc_Pauldron' && g === 'female') src += 's';
+      parts.push({ file: `outfits/${G}_${set}.glb`, src, name: `${set}_${p}`, ratio: ratio[p] ?? 0.5 });
+    }
+  }
+  const hairs = g === 'male' ? ['Hair_Long', 'Hair_Beard', 'Hair_Buzzed', 'Hair_SimpleParted'] : ['Hair_Long', 'Hair_Buns', 'Hair_SimpleParted'];
+  for (const h of hairs) parts.push({ file: `hair/${h}.glb`, src: h, name: h, ratio: 0.5 });
+  return parts;
+}
+
+/** Re-skins a merged mesh node onto the base skeleton by bone name, keeping its own bind matrices. */
+function rebind(doc, node, joints) {
+  const src = node.getSkin();
+  const skin = doc.createSkin(node.getName());
+  for (const j of src.listJoints()) {
+    const t = joints.get(j.getName());
+    if (!t) throw new Error(`No bone ${j.getName()} for ${node.getName()}`);
+    skin.addJoint(t);
+  }
+  skin.setInverseBindMatrices(src.getInverseBindMatrices()).setSkeleton(joints.get('root'));
+  node.setSkin(skin);
+}
+
+function cleanPrims(mesh) {
+  for (const p of mesh.listPrimitives()) for (const sem of p.listSemantics()) if (!KEEP_ATTR.has(sem)) p.setAttribute(sem, null);
+}
+
+async function body(g) {
+  const base = g === 'male' ? 'Superhero_Male' : 'Superhero_Female';
+  const doc = await io.read(pjoin(UBC, `characters/${base}.glb`));
+  const root = doc.getRoot();
+  const scene = root.listScenes()[0];
+  const armature = scene.listChildren()[0];
+  const joints = new Map(root.listSkins()[0].listJoints().map((j) => [j.getName(), j]));
+  const ratios = new Map();
+  for (const n of armature.listChildren()) {
+    if (!n.getMesh()) continue;
+    const name = n.getName() === 'Eyebrows' ? 'Brows' : n.getName() === 'Eyes' ? 'Eyes' : 'Body';
+    n.setName(name);
+    n.getMesh().setName(name);
+    ratios.set(name, name === 'Body' ? 0.6 : 0.5);
+  }
+  const files = new Map();
+  for (const p of partList(g)) {
+    if (!files.has(p.file)) files.set(p.file, await io.read(pjoin(UBC, p.file)));
+  }
+  for (const [file, src] of files) {
+    const wanted = partList(g).filter((p) => p.file === file);
+    const map = mergeDocuments(doc, src);
+    for (const s of src.getRoot().listScenes()) {
+      const merged = map.get(s);
+      for (const top of merged.listChildren()) {
+        for (const n of top.listChildren()) {
+          const p = wanted.find((w) => w.src === n.getName());
+          if (!p || !n.getMesh()) continue;
+          rebind(doc, n, joints);
+          n.setName(p.name);
+          n.getMesh().setName(p.name);
+          armature.addChild(n);
+          ratios.set(p.name, p.ratio);
+        }
+      }
+      merged.dispose();
+    }
+  }
+  if (g === 'male' && KAYKIT) {
+    for (const [file, prefix] of [['Skeleton_Warrior', 'Skel'], ['Skeleton_Mage', 'SkelMage']]) {
+      const sk = await io.read(pjoin(KAYKIT, `Characters/gltf/${file}.glb`));
+      for (const n of retargetKayKit(doc, sk, joints, prefix)) {
+        armature.addChild(n);
+        ratios.set(n.getName(), 1);
+      }
+    }
+  }
+  // Drop every merged leftover (other skeletons, unused pieces): only nodes under our armature survive.
+  for (const s of root.listScenes()) if (s !== scene) s.dispose();
+  const keep = new Set();
+  armature.traverse((n) => keep.add(n));
+  for (const n of root.listNodes()) if (!keep.has(n)) n.dispose();
+  for (const s of root.listSkins()) if (!s.listParents().some((p) => p.propertyType === 'Node')) s.dispose();
+  singleBuffer(doc);
+  for (const m of root.listMeshes()) cleanPrims(m);
+  // Simplify each piece to its own budget.
+  for (const n of armature.listChildren()) {
+    const m = n.getMesh();
+    if (!m) continue;
+    const ratio = ratios.get(n.getName()) ?? 0.5;
+    for (const p of m.listPrimitives()) {
+      weldPrimitive(p);
+      if (ratio < 1) simplifyPrimitive(p, { simplifier: MeshoptSimplifier, ratio, error: 0.004, lockBorder: false });
+    }
+  }
+  for (const mat of root.listMaterials()) mat.setMetallicFactor(0).setRoughnessFactor(1);
+  await doc.transform(prune(), dedup(),
+    textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [512, 512], quality: 80 }),
+    meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+  await io.write(pjoin(OUT, `${g}.glb`), doc);
+}
+
+// --- KayKit retarget ----------------------------------------------------------------------------------
+
+/** KayKit bone -> UAL bone, and the bone each segment points at (its "tail") in both rigs. */
+const KK_MAP = {
+  root: 'root', hips: 'pelvis', spine: 'spine_01', chest: 'spine_03', head: 'Head',
+  'upperarm.l': 'upperarm_l', 'lowerarm.l': 'lowerarm_l', 'wrist.l': 'hand_l', 'hand.l': 'hand_l', 'handslot.l': 'hand_l',
+  'upperarm.r': 'upperarm_r', 'lowerarm.r': 'lowerarm_r', 'wrist.r': 'hand_r', 'hand.r': 'hand_r', 'handslot.r': 'hand_r',
+  'upperleg.l': 'thigh_l', 'lowerleg.l': 'calf_l', 'foot.l': 'foot_l', 'toes.l': 'ball_l',
+  'upperleg.r': 'thigh_r', 'lowerleg.r': 'calf_r', 'foot.r': 'foot_r', 'toes.r': 'ball_r',
+};
+const KK_TAIL = {
+  hips: 'spine', spine: 'chest', chest: 'head', 'upperarm.l': 'lowerarm.l', 'lowerarm.l': 'wrist.l', 'wrist.l': 'handslot.l', 'hand.l': 'handslot.l',
+  'upperarm.r': 'lowerarm.r', 'lowerarm.r': 'wrist.r', 'wrist.r': 'handslot.r', 'hand.r': 'handslot.r',
+  'upperleg.l': 'lowerleg.l', 'lowerleg.l': 'foot.l', 'foot.l': 'toes.l', 'upperleg.r': 'lowerleg.r', 'lowerleg.r': 'foot.r', 'foot.r': 'toes.r',
+};
+const UAL_TAIL = {
+  pelvis: 'spine_01', spine_01: 'spine_03', spine_03: 'Head', upperarm_l: 'lowerarm_l', lowerarm_l: 'hand_l', hand_l: 'middle_02_l',
+  upperarm_r: 'lowerarm_r', lowerarm_r: 'hand_r', hand_r: 'middle_02_r', thigh_l: 'calf_l', calf_l: 'foot_l', foot_l: 'ball_l',
+  thigh_r: 'calf_r', calf_r: 'foot_r', foot_r: 'ball_r',
+};
+
+const v3 = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+  norm: (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+/** Inverse of a column-major affine 4x4 matrix's translation part: the bind-pose world position of a joint. */
+function bindPos(ibm) {
+  // world = inverse(ibm); for a rigid matrix, position = -R^T t.
+  const r = [[ibm[0], ibm[4], ibm[8]], [ibm[1], ibm[5], ibm[9]], [ibm[2], ibm[6], ibm[10]]];
+  const t = [ibm[12], ibm[13], ibm[14]];
+  return [-(r[0][0] * t[0] + r[1][0] * t[1] + r[2][0] * t[2]), -(r[0][1] * t[0] + r[1][1] * t[1] + r[2][1] * t[2]), -(r[0][2] * t[0] + r[1][2] * t[1] + r[2][2] * t[2])];
+}
+/** Orthonormal frame along a bone segment: axis, then two perpendiculars built from a fixed world reference. */
+function frame(head, tail) {
+  const a = v3.norm(v3.sub(tail, head));
+  const ref = Math.abs(a[1]) > 0.7 ? [0, 0, 1] : [0, 1, 0];
+  const b = v3.norm(v3.cross(ref, a));
+  const c = v3.cross(a, b);
+  return { o: head, a, b, c, len: v3.len(v3.sub(tail, head)) };
+}
+
+/**
+ * Moves a KayKit (chibi proportions, own rig) mesh onto the UAL skeleton: each vertex is expressed in the frame
+ * of every bone segment that weighs it, stretched along the segment to the UAL bone length, and rebuilt on the
+ * matching UAL segment. Limbs reach UAL proportions, the oversized skull shrinks, and the result is skinned to
+ * the UAL bones so the shared clips drive it.
+ */
+function retargetKayKit(doc, src, joints, prefix) {
+  const sroot = src.getRoot();
+  const skin = sroot.listSkins()[0];
+  const sj = skin.listJoints();
+  const ibm = skin.getInverseBindMatrices();
+  const kkPos = new Map(sj.map((j, i) => [j.getName(), bindPos(ibm.getElement(i, []))]));
+  // UAL rest positions from the base skin's bind matrices.
+  const baseSkin = doc.getRoot().listSkins()[0];
+  const bj = baseSkin.listJoints();
+  const bibm = baseSkin.getInverseBindMatrices();
+  const ualPos = new Map(bj.map((j, i) => [j.getName(), bindPos(bibm.getElement(i, []))]));
+  const ualIndex = new Map(bj.map((j, i) => [j.getName(), i]));
+  const segs = new Map();
+  for (const [kk, ual] of Object.entries(KK_MAP)) {
+    if (!kkPos.has(kk)) continue;
+    const kh = kkPos.get(kk), uh = ualPos.get(ual);
+    let kt = KK_TAIL[kk] ? kkPos.get(KK_TAIL[kk]) : null;
+    let ut = UAL_TAIL[ual] ? ualPos.get(UAL_TAIL[ual]) : null;
+    if (kk === 'head') { kt = v3.add(kh, [0, 0.5, 0]); ut = v3.add(uh, [0, 0.31, 0]); }
+    if (kk === 'toes.l' || kk === 'toes.r') { kt = v3.add(kh, [0, 0, 0.12]); ut = v3.add(uh, [0, 0, 0.12]); }
+    if (kk.startsWith('handslot')) { const h = kkPos.get(kk.replace('handslot', 'hand')); kt = v3.add(kh, v3.sub(kh, h)); }
+    if (kk === 'root') { kt = [0, 1, 0]; ut = [0, 1, 0]; }
+    if (!kh || !kt || !uh || !ut) throw new Error(`retarget: missing segment for ${kk} -> ${ual}`);
+    const kf = frame(kh, kt), uf = frame(uh, ut);
+    // Thickness: limbs and torso keep a little of KayKit's chunkiness; the skull is scaled down to fit a human neck.
+    const radial = kk === 'head' ? 0.62 : kk.startsWith('upperleg') || kk.startsWith('lowerleg') ? 0.95 : kk === 'chest' || kk === 'spine' || kk === 'hips' ? 0.8 : 0.9;
+    const axial = kk === 'head' ? 0.62 : uf.len / kf.len;
+    segs.set(kk, { kf, uf, radial, axial, ual: ualIndex.get(ual) });
+  }
+  const map = (kk, p, isNormal) => {
+    const s = segs.get(kk);
+    if (!s) throw new Error('unmapped KayKit bone ' + kk);
+    const { kf, uf } = s;
+    const d = isNormal ? p : v3.sub(p, kf.o);
+    const t = v3.dot(d, kf.a), u = v3.dot(d, kf.b), w = v3.dot(d, kf.c);
+    if (isNormal) return v3.add(v3.add(v3.mul(uf.a, t), v3.mul(uf.b, u)), v3.mul(uf.c, w));
+    return v3.add(uf.o, v3.add(v3.add(v3.mul(uf.a, t * s.axial), v3.mul(uf.b, u * s.radial)), v3.mul(uf.c, w * s.radial)));
+  };
+  const out = [];
+  const buffer = doc.getRoot().listBuffers()[0];
+  // Copy each mesh by hand (positions change, joints are remapped, materials copied once).
+  const matCache = new Map();
+  const copyMaterial = (m) => {
+    if (!m) return null;
+    if (matCache.has(m)) return matCache.get(m);
+    const nm = doc.createMaterial(prefix + '_' + m.getName()).setBaseColorFactor(m.getBaseColorFactor());
+    const tex = m.getBaseColorTexture();
+    if (tex) nm.setBaseColorTexture(doc.createTexture(tex.getName()).setImage(tex.getImage()).setMimeType(tex.getMimeType()));
+    if (m.getName() === 'Glow') nm.setEmissiveFactor([0.6, 1, 0.9]);
+    matCache.set(m, nm);
+    return nm;
+  };
+  for (const node of sroot.listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    // Rigid pieces (the helmet) hang off a bone node instead of being skinned.
+    let rigidBone = null;
+    if (!node.getSkin()) {
+      let p = node.getParentNode();
+      while (p && !KK_MAP[p.getName()]) p = p.getParentNode();
+      rigidBone = p ? p.getName() : 'head';
+    }
+    const nm = doc.createMesh(prefix + '_' + node.getName().replace(/^Skeleton_(Warrior|Mage)_/, ''));
+    for (const prim of mesh.listPrimitives()) {
+      const pos = prim.getAttribute('POSITION'), nor = prim.getAttribute('NORMAL'), uv = prim.getAttribute('TEXCOORD_0');
+      const jo = prim.getAttribute('JOINTS_0'), we = prim.getAttribute('WEIGHTS_0');
+      const n = pos.getCount();
+      const P = new Float32Array(n * 3), N = new Float32Array(n * 3), J = new Uint16Array(n * 4), W = new Float32Array(n * 4);
+      const world = node.getWorldMatrix();
+      const xf = (m, v, w1) => [m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * w1, m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * w1, m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * w1];
+      for (let i = 0; i < n; i++) {
+        let p = pos.getElement(i, []), q = nor.getElement(i, []);
+        let infl;
+        if (rigidBone) {
+          p = xf(world, p, 1);
+          q = xf(world, q, 0);
+          infl = [[rigidBone, 1]];
+        } else {
+          const ji = jo.getElement(i, []), wi = we.getElement(i, []);
+          infl = [];
+          for (let k = 0; k < 4; k++) if (wi[k] > 0) infl.push([sj[ji[k]].getName(), wi[k]]);
+        }
+        let mp = [0, 0, 0], mn = [0, 0, 0], tw = 0;
+        const acc = new Map();
+        for (const [b, w] of infl) {
+          const kk = KK_MAP[b] ? b : 'chest';
+          mp = v3.add(mp, v3.mul(map(kk, p, false), w));
+          mn = v3.add(mn, v3.mul(map(kk, q, true), w));
+          tw += w;
+          const ui = segs.get(kk).ual;
+          acc.set(ui, (acc.get(ui) ?? 0) + w);
+        }
+        mp = v3.mul(mp, 1 / tw);
+        mn = v3.norm(mn);
+        P.set(mp, i * 3);
+        N.set(mn, i * 3);
+        const top = [...acc].sort((x, y) => y[1] - x[1]).slice(0, 4);
+        const sum = top.reduce((s, x) => s + x[1], 0);
+        top.forEach(([ui, w], k) => { J[i * 4 + k] = ui; W[i * 4 + k] = w / sum; });
+      }
+      const np = doc.createPrimitive()
+        .setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(P).setBuffer(buffer))
+        .setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(N).setBuffer(buffer))
+        .setAttribute('JOINTS_0', doc.createAccessor().setType('VEC4').setArray(J).setBuffer(buffer))
+        .setAttribute('WEIGHTS_0', doc.createAccessor().setType('VEC4').setArray(W).setBuffer(buffer))
+        .setIndices(doc.createAccessor().setType('SCALAR').setArray(prim.getIndices().getArray().slice()).setBuffer(buffer))
+        .setMaterial(copyMaterial(prim.getMaterial()));
+      if (uv) np.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(uv.getArray().slice()).setBuffer(buffer));
+      nm.addPrimitive(np);
+    }
+    out.push(doc.createNode(nm.getName()).setMesh(nm).setSkin(baseSkin));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Nature props
+// ---------------------------------------------------------------------------
 
 /** Nature props kept from the megakit (node names are kept as-is). */
 const NATURE = [
@@ -153,10 +462,9 @@ async function foldNodes(doc, nodes, name) {
 
 async function nature() {
   const dir = pjoin(SRC, 'stylized-nature-megakit/glTF');
-  const doc = new (await import('@gltf-transform/core')).Document();
+  const doc = new Document();
   const buffer = doc.createBuffer();
   const scene = doc.createScene('nature');
-  const { mergeDocuments } = await import('@gltf-transform/functions');
   for (const file of NATURE) {
     const part = await io.read(pjoin(dir, file + '.gltf'));
     const map = mergeDocuments(doc, part);
@@ -177,14 +485,18 @@ async function nature() {
   for (const a of doc.getRoot().listAccessors()) a.setBuffer(buffer);
   await doc.transform(prune(), dedup(), flatten(), join({ keepNamed: true }), weld(),
     simplify({ simplifier: MeshoptSimplifier, ratio: 0.3, error: 0.02 }),
-    textureCompress({ encoder: (await import('sharp')).default, targetFormat: 'webp', resize: [512, 512], quality: 82 }),
+    textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [512, 512], quality: 82 }),
     meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
   await io.write(pjoin(OUT, 'nature.glb'), doc);
 }
 
-const which = process.argv[3] ?? 'all';
-if (which === 'all' || which === 'characters') await characters();
+if (which === 'all' || which === 'anims') await anims();
+if (which === 'all' || which === 'bodies') {
+  if (!UBC || !existsSync(UBC)) throw new Error('bodies need <ubc-dir>');
+  await body('male');
+  await body('female');
+}
 if (which === 'all' || which === 'nature') await nature();
-for (const f of ['characters.glb', 'nature.glb']) {
+for (const f of ['anims.glb', 'male.glb', 'female.glb', 'nature.glb']) {
   try { console.log(f, (statSync(pjoin(OUT, f)).size / 1024).toFixed(0) + ' KB'); } catch { /* not built */ }
 }
