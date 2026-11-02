@@ -517,7 +517,7 @@ export class Game {
     this.state = 'playing';
     this.controls.setVisible(true);
     this.hud.setVisible(true);
-    this.hud.setObjective('Explore the temple grounds');
+    this.hud.setObjective(CHAPTERS[this.chapter].objective);
   }
 
   newGamePlus() {
@@ -1545,7 +1545,7 @@ export class Game {
           this.hud.toast('The seal is broken', '#ff9a6a');
           this.audio.play('seal');
         }
-        if (i < zones.length - 1) this.hud.setObjective('Press on deeper into the temple');
+        if (i < zones.length - 1) this.hud.setObjective(`Press on · ${zones[i + 1].name}`);
         this.save();
       }
       const remaining = alive + z.waves.slice(this.zoneWave[i] + 1).reduce((a, w) => a + w.kinds.reduce((b, [, n]) => b + n, 0), 0);
