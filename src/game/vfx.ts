@@ -486,7 +486,9 @@ export class Vfx {
     this.sparks = new Particles(maxParticles, true);
     this.dust = new Particles(Math.floor(maxParticles / 2), false);
     scene.add(this.sparks.points, this.dust.points);
-    this.pixel = new PixelFx(scene);
+    // Flipbook budget scales with the quality tier: one instanced draw either way, but the
+    // oldest sprites are recycled sooner on phones so the buffer upload stays small.
+    this.pixel = new PixelFx(scene, Math.max(96, Math.min(288, Math.round(maxParticles / 6))));
   }
 
   private create(kind: PoolKind): Pooled {
@@ -765,16 +767,71 @@ export class Vfx {
     });
   }
 
+  /**
+   * The screen-space angle of a world direction, so flipbook sprites can be rotated to match the
+   * angle a blow came in at (a hit from the left throws its sparks to the right, on screen).
+   */
+  private screenAngle(dir: { x: number; y?: number; z: number }) {
+    const cam = this.camera;
+    if (!cam) return 0;
+    const e = cam.matrixWorldInverse.elements;
+    // Camera-space x and y of the direction = dot with the view matrix rows.
+    const sx = e[0] * dir.x + e[4] * (dir.y ?? 0) + e[8] * dir.z;
+    const sy = e[1] * dir.x + e[5] * (dir.y ?? 0) + e[9] * dir.z;
+    return Math.atan2(sy, sx);
+  }
+
   /** Hit sparks at a point, with a pixel burst and a slash streak sprite. */
   impact(pos: THREE.Vector3, color = COLORS.goldHot, count = 10) {
+    this.impactDir(pos, null, color, count);
+  }
+
+  /**
+   * Directional impact: every piece of the burst (streak, droplets, sparks) is thrown along the
+   * blow's direction, which is what makes a hit read as coming *from* somewhere.
+   */
+  impactDir(pos: THREE.Vector3, dir: { x: number; z: number } | null, color = COLORS.goldHot, count = 10, essence = false) {
     const big = count > 10;
-    const at = this.tmpV.set(pos.x, pos.y + 1, pos.z);
+    const at = this.tmpV.set(pos.x, pos.y + (dir ? 0 : 1), pos.z);
     // Gold-ish hits keep the sprite's own hot palette; other colours tint it.
     const tint = color === COLORS.goldHot || color === COLORS.gold ? 0xffffff : color;
+    const ang = dir ? this.screenAngle(dir) : Math.random() * Math.PI * 2;
     this.pixel.spawn('impact', at, big ? 2.4 : 1.6, big ? 0.32 : 0.24, { tint });
-    this.pixel.spawn('slash', at, big ? 2.8 : 2.0, 0.18, { tint, rot: Math.random() * Math.PI * 2 });
+    this.pixel.spawn('slash', at, big ? 2.8 : 2.0, 0.18, { tint, rot: ang + Math.PI / 2 });
+    if (essence || big) this.pixel.spawn('blood', at, big ? 2.6 : 1.9, 0.3, { tint: essence ? 0xffffff : tint, rot: ang, delay: 0.02 });
     if (big) this.pixel.spawn('spark', at.set(at.x + (Math.random() - 0.5), at.y + 0.6, at.z), 1.2, 0.35, { delay: 0.05 });
-    this.sparks.emit(pos.x, pos.y + 1, pos.z, { count, speed: [3, 9], up: [1, 5], life: [0.15, 0.4], size: [0.1, 0.25], color, color2: COLORS.gold, gravity: 10, drag: 3 });
+    const y = pos.y + (dir ? 0 : 1);
+    if (dir) {
+      // Sparks spray forward along the blow, in a tight cone.
+      const spread = 0.5;
+      this.sparks.emit(pos.x, y, pos.z, {
+        count, speed: [4, 11], up: [1, 4], life: [0.15, 0.4], size: [0.1, 0.25],
+        color, color2: COLORS.gold, gravity: 12, drag: 3,
+        dir: { x: dir.x, z: dir.z }, spread,
+      });
+    } else {
+      this.sparks.emit(pos.x, y, pos.z, { count, speed: [3, 9], up: [1, 5], life: [0.15, 0.4], size: [0.1, 0.25], color, color2: COLORS.gold, gravity: 10, drag: 3 });
+    }
+  }
+
+  /** Rising embers: what a body dissolves into, and what a dying fire leaves. */
+  embers(pos: THREE.Vector3, size = 1, n = 3, tint = 0xffffff) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * size * 0.6;
+      this.pixel.spawn('ember', this.tmpV.set(pos.x + Math.cos(a) * r, pos.y + 0.3 + Math.random() * size * 0.6, pos.z + Math.sin(a) * r), 1.6 * size, 0.7 + Math.random() * 0.4, { delay: i * 0.08, rot: 0, tint });
+    }
+  }
+
+  /** Arcane bloom: spell casts, seals, shrine activations. */
+  burst(pos: THREE.Vector3, size = 2, tint = 0xffffff, delay = 0) {
+    this.pixel.spawn('burst', pos, size, 0.4, { tint, rot: 0, delay });
+  }
+
+  /** Chunky pixel fissures on top of the ground-crack decal, for heavy landings. */
+  crackPix(pos: THREE.Vector3, size = 2, n = 1) {
+    for (let i = 0; i < n; i++) {
+      this.pixel.spawn('crack', this.tmpV.set(pos.x, pos.y + 0.35, pos.z), size, 0.6, { rot: 0, delay: i * 0.05 });
+    }
   }
 
   dustBurst(pos: THREE.Vector3, count = 12, radius = 1) {

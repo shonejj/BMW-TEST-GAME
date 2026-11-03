@@ -12,6 +12,7 @@ const POST_FRAG = /* glsl */ `
   uniform float uLevels;  // colour steps per channel
   uniform vec3 uGrade;    // chapter colour grade multiplier
   uniform float uSat;
+  uniform vec3 uPunch;    // impact flash colour x strength (0 = none)
   varying vec2 vUv;
   float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
   void main() {
@@ -35,6 +36,16 @@ const POST_FRAG = /* glsl */ `
     // Slight warm/cool split-tone for that hand-graded pixel-art mood.
     float g = lum(q);
     q += vec3(0.03, 0.0, -0.025) * smoothstep(0.4, 1.0, g) + vec3(-0.02, 0.0, 0.035) * (1.0 - smoothstep(0.0, 0.4, g));
+    // Impact punch: a hard, dithered screen flash that is strongest at the edges, so hits and
+    // damage read even when the hero is off to one side. Quantised again to stay in the palette.
+    float pw = max(max(uPunch.r, uPunch.g), uPunch.b);
+    if (pw > 0.001) {
+      vec2 o = vUv * 2.0 - 1.0;
+      float edge = 0.35 + 0.65 * dot(o, o);
+      float amt = clamp(pw * edge, 0.0, 0.85);
+      amt = floor(amt * 6.0 + d * 1.2) / 6.0;
+      q = mix(q, uPunch / max(pw, 0.001), amt);
+    }
     gl_FragColor = vec4(clamp(q, 0.0, 1.0), 1.0);
   }`;
 
@@ -133,7 +144,7 @@ export class Renderer {
       this.rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, magFilter: THREE.NearestFilter, minFilter: THREE.NearestFilter, depthBuffer: true, samples: 0 });
       const mat = new THREE.ShaderMaterial({
         vertexShader: POST_VERT, fragmentShader: POST_FRAG, depthTest: false, depthWrite: false,
-        uniforms: { uTex: { value: this.rt.texture }, uRes: { value: new THREE.Vector2(w, h) }, uLevels: { value: 22 }, uGrade: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1 } },
+        uniforms: { uTex: { value: this.rt.texture }, uRes: { value: new THREE.Vector2(w, h) }, uLevels: { value: 22 }, uGrade: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1 }, uPunch: { value: new THREE.Vector3() } },
       });
       const scene = new THREE.Scene();
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
@@ -167,8 +178,37 @@ export class Renderer {
   /** Milliseconds spent in the last render() call (CPU submit time). */
   lastRenderMs = 0;
 
+  private punchStrength = 0;
+  private readonly punchColor = new THREE.Color(0xffffff);
+  private lastFrame = 0;
+
+  /**
+   * Screen-wide impact flash, strongest at the edges: heavy hits taken and landed, boss slams.
+   * `amount` is 0..1 and decays in real time, so hit-stop does not stretch it. Respects the
+   * player's flash setting through `flashScale`.
+   */
+  punch(amount: number, color = 0xffffff) {
+    const a = Math.min(1, amount) * this.flashScale;
+    if (a <= this.punchStrength) return;
+    this.punchStrength = a;
+    this.punchColor.setHex(color);
+  }
+  /** 0 disables impact flashes (accessibility setting). */
+  flashScale = 1;
+
   render() {
     const t = performance.now();
+    // Impact flash decay, on the wall clock so freeze frames don't hold it.
+    const dt = this.lastFrame ? Math.min(0.1, (t - this.lastFrame) / 1000) : 0;
+    this.lastFrame = t;
+    if (this.punchStrength > 0) {
+      this.punchStrength = Math.max(0, this.punchStrength - dt * 4.5);
+      if (this.post) {
+        const v = this.post.mat.uniforms.uPunch.value as THREE.Vector3;
+        const s = this.punchStrength * this.punchStrength;
+        v.set(this.punchColor.r * s, this.punchColor.g * s, this.punchColor.b * s);
+      }
+    }
     if (this.look === 'pixel' && this.rt && this.post) {
       this.renderer.setRenderTarget(this.rt);
       this.renderer.render(this.scene, this.camera);
