@@ -6,6 +6,7 @@ import { Renderer } from '../engine/renderer';
 import { chance, isTouchDevice, rand, randInt, yawOf } from '../engine/util';
 import { Controls } from '../ui/controls';
 import { Hud, type Label } from '../ui/hud';
+import { Prompts } from '../ui/prompt';
 import { Menus } from '../ui/menus';
 import { Debris } from '../world/debris';
 import { Level, type Breakable, type SpawnKind } from '../world/level';
@@ -103,6 +104,8 @@ export class Game {
   readonly controls: Controls;
   readonly menus: Menus;
   readonly level: Level;
+  /** Contextual interaction prompts and one-off tutorial hints. */
+  readonly prompts: Prompts;
   vfx!: Vfx;
   debris!: Debris;
   rain!: Rain;
@@ -170,6 +173,7 @@ export class Game {
     this.menus = new Menus(container, this);
     this.stanceHud = new StanceHud(container, this);
     this.level = new Level(this.renderer.scene);
+    this.prompts = new Prompts(this.level, this.hud, this.touch);
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);
     document.addEventListener('visibilitychange', () => {
@@ -1279,6 +1283,7 @@ export class Game {
       this.debris.update(dt);
       this.vfx.update(dt);
       this.level.update(dt, this.time, this.camRig.target);
+      if (this.player.alive) this.level.updateWater(dt, this.player.pos.x, this.player.pos.z, this.player.speedNow, this.vfx, this.audio);
       this.level.followShadow(this.player.pos);
     }
     this.rain.update(rawDt, this.camRig.target);
@@ -1310,8 +1315,10 @@ export class Game {
     this.miniTimer -= rawDt;
     if (this.miniTimer <= 0) {
       this.miniTimer = 0.1;
-      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates, this.camRig.yaw);
+      this.hud.drawMinimap(this.miniMap, this.level.bounds, p.pos.x, p.pos.z, p.yaw, this.targets().map((e) => ({ x: e.pos.x, z: e.pos.z, boss: e.isBoss })), this.level.gates, this.camRig.yaw, this.level.markers());
     }
+    if (this.state === 'playing' && p.alive) this.prompts.update(rawDt, p.pos.x, p.pos.y, p.pos.z, this.input.usingGamepad, this.touch);
+    else this.prompts.clear();
     const near = this.targets().filter((e) => e.pos.distanceTo(p.pos) < 18).length;
     this.audio.combatIntensity += ((near > 0 ? 1 : 0) - this.audio.combatIntensity) * Math.min(1, rawDt * 0.8);
     this.audio.update(rawDt);

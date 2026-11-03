@@ -639,3 +639,29 @@ html, body {
 .ctl-editor { top: 50%; transform: translate(-50%, -50%); }
 .ctl-row .mbtn.sq::before, .ctl-row .mbtn.sq::after { display: none; }
 .ctl-row .mbtn.sq { width: 40px; height: 34px; font: 700 20px var(--ui); color: var(--gold-hot); border: 1px solid var(--line); }
+
+/* ------------------------------------- Interaction prompts & tutorial hints (Track E) */
+.prompt {
+  position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; will-change: transform; pointer-events: none;
+  font: 700 12px var(--ui); color: #f4ecd8; text-shadow: 0 1px 3px #000;
+  padding: 3px 9px; border-radius: 3px;
+  background: rgba(10, 8, 6, 0.74); border: 1px solid rgba(226, 178, 90, 0.55);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.6);
+  animation: prompt-in 0.18s ease-out;
+}
+.prompt-key {
+  font: 700 11px var(--ui); color: #16140f; background: var(--gold-hot);
+  border-radius: 2px; padding: 1px 5px; box-shadow: 0 0 8px rgba(255, 240, 176, 0.5);
+}
+@keyframes prompt-in { from { opacity: 0; } to { opacity: 1; } }
+
+.hint {
+  position: absolute; left: 50%; bottom: calc(26% + var(--safe-b)); transform: translateX(-50%);
+  max-width: min(78vw, 540px); text-align: center; opacity: 0; z-index: 3; pointer-events: none;
+  font: 600 13px var(--ui); color: #f0e6cc; line-height: 1.5;
+  padding: 8px 16px; border-radius: 3px;
+  background: rgba(10, 8, 6, 0.8); border-left: 2px solid var(--gold); border-right: 2px solid var(--gold);
+  text-shadow: 0 1px 3px #000; transition: opacity 0.3s;
+}
+.hint.show { opacity: 1; }

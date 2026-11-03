@@ -21,7 +21,7 @@ export type Sfx =
   | 'skitter' | 'bite' | 'roar' | 'fire' | 'whirl' | 'slam' | 'gale' | 'hurt' | 'dodge'
   | 'transform' | 'seal' | 'web' | 'legendary' | 'death'
   | 'heavyCharge' | 'chargeLevel' | 'heavyHit' | 'drink' | 'perfect' | 'immobilize' | 'ringfire' | 'focus'
-  | 'ghoulHurt' | 'ghoulDie' | 'creatureDie' | 'stepGrass' | 'stepStone'
+  | 'ghoulHurt' | 'ghoulDie' | 'creatureDie' | 'stepGrass' | 'stepStone' | 'stepWater' | 'splash' | 'splashBig'
   | 'uiMove' | 'uiSelect' | 'uiBack';
 
 type SetName = keyof typeof manifest.sfx;
@@ -36,7 +36,12 @@ interface Layer { set: SetName; vol: number; rate?: [number, number]; delay?: nu
 interface Thump { thump: number; vol: number; delay?: number }
 /** A note on a score instrument (stingers, chimes). */
 interface Tone { inst: InstName; vol: number; midi?: number; delay?: number }
-type Part = Layer | Thump | Tone;
+/**
+ * Synthesised water: there is no recorded splash in the pack, so wading and splashes are filtered noise
+ * bursts plus a few droplet sines. `splash` is the size, 0 (a footfall) to 1 (diving in).
+ */
+interface Splash { splash: number; vol: number; delay?: number }
+type Part = Layer | Thump | Tone | Splash;
 
 const SFX: Record<Sfx, Part[]> = {
   swing: [{ set: 'swing', vol: 0.5, rate: [0.95, 1.15] }],
@@ -74,6 +79,9 @@ const SFX: Record<Sfx, Part[]> = {
   creatureDie: [{ set: 'creatureDie', vol: 0.4, rate: [1.3, 1.7] }],
   stepGrass: [{ set: 'stepGrass', vol: 0.12, rate: [0.9, 1.1] }],
   stepStone: [{ set: 'stepStone', vol: 0.14, rate: [0.9, 1.1] }],
+  stepWater: [{ splash: 0.12, vol: 0.14 }, { set: 'stepGrass', vol: 0.05, rate: [0.7, 0.85] }],
+  splash: [{ splash: 0.5, vol: 0.3 }],
+  splashBig: [{ splash: 1, vol: 0.5 }, { thump: 110, vol: 0.18 }],
   uiMove: [{ set: 'uiMove', vol: 0.3 }],
   uiSelect: [{ set: 'uiSelect', vol: 0.35 }],
   uiBack: [{ set: 'uiBack', vol: 0.3 }],
@@ -617,6 +625,37 @@ export class Audio {
     o.stop(when + 0.5);
   }
 
+  /**
+   * Water: a noise burst through a bandpass that falls as the water closes over, plus a few droplets and a
+   * wet reverb send. Cheap (3-6 nodes), and every call lands on different frequencies so steps never repeat.
+   */
+  private splashNoise(size: number, vol: number, when: number) {
+    const ctx = this.ctx!;
+    const dur = 0.12 + size * 0.5;
+    const src = this.noiseSrc(false, when, dur + 0.1);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.7 + Math.random() * 0.6;
+    const f0 = (2600 - size * 900) * rnd(0.85, 1.2);
+    bp.frequency.setValueAtTime(f0, when);
+    bp.frequency.exponentialRampToValueAtTime(f0 * rnd(0.22, 0.34), when + dur);
+    const g = this.env(when, 0.004 + size * 0.02, vol, dur);
+    src.connect(bp).connect(g).connect(this.sfxBus);
+    const send = ctx.createGain();
+    send.gain.value = 0.5 + size;
+    g.connect(send).connect(this.reverbIn);
+    // Droplets falling back in.
+    const drops = Math.round(size * 5);
+    for (let i = 0; i < drops; i++) {
+      const at = when + dur * rnd(0.4, 1.3);
+      const o = this.tone('sine', at, 0.07);
+      const f = rnd(700, 1900);
+      o.frequency.setValueAtTime(f, at);
+      o.frequency.exponentialRampToValueAtTime(f * rnd(1.5, 2.2), at + 0.05);
+      o.connect(this.env(at, 0.004, vol * rnd(0.2, 0.5), 0.06)).connect(this.sfxBus);
+    }
+  }
+
   play(s: Sfx) {
     if (!this.ctx || !this.loaded) return;
     const now = this.ctx.currentTime;
@@ -633,6 +672,8 @@ export class Audio {
         this.buffer(bufs[Math.floor(Math.random() * bufs.length)], when, a + Math.random() * (b - a), p.vol, this.sfxBus);
       } else if ('thump' in p) {
         this.thump(p.thump, p.vol, when);
+      } else if ('splash' in p) {
+        this.splashNoise(p.splash, p.vol, when);
       } else {
         this.note(p.inst, p.midi, when, p.vol, this.sfxBus);
       }

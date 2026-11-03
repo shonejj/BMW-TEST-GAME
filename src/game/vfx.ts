@@ -454,6 +454,8 @@ export const COLORS = {
   jadeHot: 0xd4ffd0,
   red: 0xff2a2a,
   white: 0xffffff,
+  water: 0xbfe8ea,
+  foam: 0xf2fbff,
 };
 
 type PoolKind = 'slash' | 'ring' | 'tele' | 'beam' | 'crack' | 'flash';
@@ -783,6 +785,50 @@ export class Vfx {
       this.pixel.spawn('dust', this.tmpV.set(pos.x + Math.cos(a) * radius * 0.6, pos.y + 0.5 + Math.random() * 0.3, pos.z + Math.sin(a) * radius * 0.6), 1.4 + radius * 0.8, 0.55 + Math.random() * 0.2, { delay: i * 0.04 });
     }
     this.dust.emit(pos.x, pos.y + 0.2, pos.z, { count, radius, speed: [1, 3], up: [0.2, 1.5], life: [0.6, 1.4], size: [0.6, 1.2], color: 0x6c6458, color2: 0x8f877a, gravity: 0.5, drag: 2 });
+  }
+
+  // -------------------------------------------------------------------------
+  // Water
+  // -------------------------------------------------------------------------
+
+  /**
+   * A ripple ring spreading on a water surface (wading footfalls). Uses the pooled ground ring, so no
+   * geometry or material is created per step.
+   */
+  ripple(x: number, y: number, z: number, radius = 1.1, dur = 0.9) {
+    this.tmpV.set(x, y, z);
+    const it = this.ring(this.tmpV, radius, COLORS.water, 0.1, 0.07, 0.35, 0.5, 0.015);
+    const u = it.mat.uniforms;
+    this.add('ring', it, dur, (k) => {
+      u.uRadius.value = 0.2 + 0.78 * (1 - (1 - k) * (1 - k));
+      u.uAlpha.value = 0.5 * (1 - k) * (1 - k);
+      u.uTime.value = this.time;
+    });
+  }
+
+  /**
+   * Water thrown up by a footfall or a body hitting the surface: droplets plus a couple of foam sprites.
+   * `power` 0..1 scales the burst (a step is ~0.3, jumping in is 1).
+   */
+  splash(x: number, y: number, z: number, power = 0.4, radius = 0.5) {
+    const n = Math.round(4 + power * 20);
+    this.sparks.emit(x, y + 0.05, z, {
+      count: n, radius: radius * 0.8, speed: [0.6 + power * 2, 1.6 + power * 5], up: [1.4 + power * 2, 3.2 + power * 5],
+      life: [0.22, 0.5 + power * 0.3], size: [0.1, 0.22 + power * 0.18], color: COLORS.water, color2: COLORS.foam, gravity: 11, drag: 1.6,
+    });
+    const sprites = power > 0.6 ? 3 : power > 0.25 ? 1 : 0;
+    for (let i = 0; i < sprites; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * radius;
+      this.pixel.spawn('dust', this.tmpV.set(x + Math.cos(a) * r, y + 0.25 + Math.random() * 0.2, z + Math.sin(a) * r),
+        0.9 + power * 1.6, 0.3 + Math.random() * 0.2, { delay: i * 0.04, tint: COLORS.foam });
+    }
+  }
+
+  /** Entering or leaving water: a big splash with two expanding rings. */
+  splashBurst(x: number, y: number, z: number, radius = 1) {
+    this.splash(x, y, z, 1, radius * 0.7);
+    this.ripple(x, y, z, radius * 1.8, 0.8);
+    this.ripple(x, y, z, radius * 3.0, 1.2);
   }
 
   /** Death of a yaoguai: its soul rises out of a puff of miasma. */

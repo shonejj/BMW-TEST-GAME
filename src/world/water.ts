@@ -172,3 +172,75 @@ export function buildIce(t: Terrain, inside: (x: number, z: number) => boolean, 
   mat.uniforms.uTime = waterTime;
   return new THREE.Mesh(geo, mat);
 }
+
+// ---------------------------------------------------------------------------
+// Wading effects
+// ---------------------------------------------------------------------------
+
+/** What WaterFx needs from the terrain. */
+export interface WaterProbe {
+  wadeAt(x: number, z: number): number;
+  heightAt(x: number, z: number): number;
+}
+/** The bits of Vfx WaterFx uses (typed structurally so the world layer doesn't depend on the game layer). */
+export interface Splasher {
+  ripple(x: number, y: number, z: number, radius?: number, dur?: number): void;
+  splash(x: number, y: number, z: number, power?: number, radius?: number): void;
+  splashBurst(x: number, y: number, z: number, radius?: number): void;
+}
+export interface Sounder {
+  play(s: 'splash' | 'splashBig'): void;
+}
+
+/** Ankle-deep counts as wet (ripples, wet steps); below this the hero is on dry land. */
+export const WADE_MIN = 0.08;
+
+/**
+ * Footfall ripples, step splashes and the splash burst on entering or leaving the water. Driven by distance
+ * travelled rather than the animation, so it costs nothing per frame and never allocates: the rings and
+ * droplets come from the pooled Vfx effects.
+ */
+export class WaterFx {
+  /** Depth the hero is currently standing in (0 on dry land) — read by the HUD and the player. */
+  depth = 0;
+  private wet = false;
+  private travel = 0;
+  private idle = 0;
+
+  reset() {
+    this.depth = 0;
+    this.wet = false;
+    this.travel = 0;
+    this.idle = 0;
+  }
+
+  update(dt: number, t: WaterProbe, x: number, z: number, speed: number, vfx: Splasher, audio: Sounder) {
+    const d = (this.depth = t.wadeAt(x, z));
+    const wet = d > WADE_MIN;
+    const surface = t.heightAt(x, z) + d;
+    if (wet !== this.wet) {
+      this.wet = wet;
+      this.travel = 0;
+      this.idle = 0;
+      const power = Math.min(1.4, 0.6 + d);
+      vfx.splashBurst(x, surface, z, power);
+      audio.play(d > 0.5 ? 'splashBig' : 'splash');
+      return;
+    }
+    if (!wet) return;
+    // Trailing rings and droplets, one set per stride's worth of ground covered.
+    this.travel += speed * dt;
+    if (this.travel > 0.5) {
+      this.travel = 0;
+      vfx.ripple(x, surface, z, 0.9 + d * 0.8);
+      vfx.splash(x, surface, z, 0.18 + Math.min(0.4, speed * 0.05), 0.35);
+      return;
+    }
+    // Standing still: the water still laps around the legs.
+    this.idle += dt;
+    if (this.idle > 1.4) {
+      this.idle = 0;
+      vfx.ripple(x, surface, z, 0.8 + d * 0.6, 1.3);
+    }
+  }
+}

@@ -17,6 +17,12 @@ export interface Label {
   remove(): void;
 }
 
+/** Minimap discovery markers. */
+export type MarkKind = 'chest' | 'item' | 'shortcut' | 'brazier' | 'shrine';
+const MARK_COLORS: Record<MarkKind, string> = {
+  chest: '#e2b25a', item: '#7dff9a', shortcut: '#9ad4ff', brazier: '#ff9a40', shrine: '#ffd27a',
+};
+
 /** Pickup labels show only within this many metres of the hero. */
 const LABEL_RANGE = 6;
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -48,6 +54,14 @@ export class Hud {
   private labelLayer: HTMLDivElement;
   private vignette: HTMLDivElement;
   private objective: HTMLDivElement;
+  /** World-space "what do I do here" prompt, and the one-off tutorial hint line. */
+  private prompt: HTMLDivElement;
+  private promptKey: HTMLSpanElement;
+  private promptText: HTMLSpanElement;
+  private promptPos: THREE.Vector3 | null = null;
+  private promptLabel = '';
+  private promptGlyph = '';
+  private hint: HTMLDivElement;
   private floaters: Floater[] = [];
   private labels: Label[] = [];
   private tmp = new THREE.Vector3();
@@ -99,6 +113,12 @@ export class Hud {
     bb.appendChild(this.bossFill);
     this.bossBox.append(this.bossName, bb);
 
+    this.prompt = h('div', 'prompt');
+    this.promptKey = h('span', 'prompt-key');
+    this.promptText = h('span', 'prompt-text');
+    this.prompt.append(this.promptKey, this.promptText);
+    setStyle(this.prompt, 'display', 'none');
+    this.hint = h('div', 'hint');
     this.title = h('div', 'title-card');
     this.toasts = h('div', 'toasts');
     this.objective = h('div', 'objective');
@@ -109,7 +129,8 @@ export class Hud {
     this.subtitle = h('div', 'subtitle');
     this.skipHint = h('div', 'skip-hint', 'Tap or press any button to skip');
     this.letterbox.append(this.subtitle, this.skipHint);
-    this.root.append(this.labelLayer, this.floatLayer, this.vignette, ptl, ptr, this.bossBox, this.title, this.toasts, this.objective);
+    this.labelLayer.appendChild(this.prompt);
+    this.root.append(this.labelLayer, this.floatLayer, this.vignette, ptl, ptr, this.bossBox, this.title, this.toasts, this.objective, this.hint);
     parent.appendChild(this.letterbox);
 
     for (let i = 0; i < 60; i++) {
@@ -174,6 +195,32 @@ export class Hud {
   setObjective(text: string) {
     this.objective.textContent = text;
     this.objective.classList.toggle('hidden', !text);
+  }
+
+  /**
+   * Contextual prompt over a world point ("Attack to clear the way", "Open", "Rest"). `key` is the button
+   * label for the device in use, or '' for things you simply walk up to. Call with null to hide it.
+   */
+  setPrompt(x: number | null, y = 0, z = 0, label = '', key = '') {
+    if (x === null) {
+      if (this.promptPos) {
+        this.promptPos = null;
+        setStyle(this.prompt, 'display', 'none');
+      }
+      return;
+    }
+    (this.promptPos ??= new THREE.Vector3()).set(x, y, z);
+    if (label !== this.promptLabel) setText(this.promptText, (this.promptLabel = label));
+    if (key !== this.promptGlyph) {
+      setText(this.promptKey, (this.promptGlyph = key));
+      setStyle(this.promptKey, 'display', key ? '' : 'none');
+    }
+  }
+
+  /** The one-off tutorial line (empty hides it). */
+  showHint(text: string) {
+    setText(this.hint, text);
+    setClass(this.hint, 'show', !!text);
   }
 
   setBoss(name: string | null, frac = 1) {
@@ -300,6 +347,11 @@ export class Hud {
       setStyle(l.el, 'opacity', alpha >= 1 ? '1' : alpha.toFixed(2));
       l.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
     }
+    if (this.promptPos) {
+      this.project(this.promptPos, camera, 0);
+      setStyle(this.prompt, 'display', this.onScreen ? 'flex' : 'none');
+      if (this.onScreen) this.prompt.style.transform = `translate(${this.px}px, ${this.py}px) translate(-50%, -100%)`;
+    }
     this.vignetteT = Math.max(0, this.vignetteT - dt);
     this.vignette.style.opacity = String(this.vignetteT * 2.5);
   }
@@ -309,7 +361,7 @@ export class Hud {
    * "up" on the minimap is always "into the screen" in the game view, so it matches what the player sees.
    * `camYaw` is the camera's yaw round the hero; `yaw` is the hero's facing.
    */
-  drawMinimap(map: HTMLCanvasElement, bounds: { x0: number; z1: number }, px: number, pz: number, yaw: number, dots: { x: number; z: number; boss?: boolean }[], gates: { x0: number; x1: number; z: number; active: boolean }[], camYaw = 0) {
+  drawMinimap(map: HTMLCanvasElement, bounds: { x0: number; z1: number }, px: number, pz: number, yaw: number, dots: { x: number; z: number; boss?: boolean }[], gates: { x0: number; x1: number; z: number; active: boolean }[], camYaw = 0, marks: { x: number; z: number; kind: MarkKind }[] = []) {
     const ctx = this.miniCtx;
     const W = this.mini.width, H = this.mini.height;
     const scale = 2; // map px per metre
@@ -336,6 +388,25 @@ export class Hud {
       ctx.moveTo((g.x0 - px) * scale, (g.z - pz) * scale);
       ctx.lineTo((g.x1 - px) * scale, (g.z - pz) * scale);
       ctx.stroke();
+    }
+    // Discoveries: chests, collectables, braziers, shortcuts and shrines (drawn under the enemy dots).
+    for (const m of marks) {
+      const mx = (m.x - px) * scale, mz = (m.z - pz) * scale;
+      if (Math.abs(mx) > W / view || Math.abs(mz) > H / view) continue;
+      ctx.save();
+      ctx.translate(mx, mz);
+      ctx.rotate(-camYaw);
+      ctx.fillStyle = MARK_COLORS[m.kind];
+      ctx.strokeStyle = '#16170f';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (m.kind === 'chest') ctx.rect(-3, -2.5, 6, 5);
+      else if (m.kind === 'shrine') { ctx.moveTo(0, -4); ctx.lineTo(3.4, 2); ctx.lineTo(-3.4, 2); ctx.closePath(); }
+      else if (m.kind === 'shortcut') { ctx.moveTo(-3.5, -3); ctx.lineTo(3, 0); ctx.lineTo(-3.5, 3); ctx.closePath(); }
+      else ctx.arc(0, 0, m.kind === 'brazier' ? 2.6 : 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
     for (const d of dots) {
       ctx.fillStyle = d.boss ? '#7dff9a' : '#ff3030';

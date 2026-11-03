@@ -67,6 +67,9 @@ type Special = 'resolute' | 'sweep' | 'sting';
 
 export const BASE_TRANSFORM_DURATION = 15;
 
+/** Floors that ring under a boot; everything else (grass, moss, dirt, sand, snow) is soft. */
+const HARD_FLOORS = new Set(['stone', 'rock', 'ice', 'bone', 'wood']);
+
 export class Player {
   readonly rig: HeroRig;
   readonly anim: Animator;
@@ -790,12 +793,20 @@ export class Player {
   }
 
   private locomote(dt: number, mx: number, mz: number, moving: boolean, speed: number) {
+    const level = this.game.level;
+    // Wading: the deeper the water, the more it drags (down to 45% at chest height).
+    const wade = level.wadeAt(this.pos.x, this.pos.z);
+    if (wade > 0.08) speed *= 1 - clamp(wade / 1.2, 0, 1) * 0.55;
+    // Ice gives way under the hero's feet: slower to get going, slower to stop.
+    const slip = level.floorAt(this.pos.x, this.pos.z) === 'ice' ? 2.6 : 10;
     if (moving) {
-      this.game.level.move(this.pos, mx * speed * dt, mz * speed * dt, this.radius);
-      if (this.whirlTime <= 0) this.yaw = approachAngle(this.yaw, yawOf(mx, mz), dt * 14);
-      this.speedNow = lerp(this.speedNow, speed * Math.hypot(mx, mz), damp(10, dt));
+      level.move(this.pos, mx * speed * dt, mz * speed * dt, this.radius);
+      if (this.whirlTime <= 0) this.yaw = approachAngle(this.yaw, yawOf(mx, mz), dt * (slip < 5 ? 5 : 14));
+      this.speedNow = lerp(this.speedNow, speed * Math.hypot(mx, mz), damp(slip, dt));
     } else {
-      this.speedNow = lerp(this.speedNow, 0, damp(10, dt));
+      this.speedNow = lerp(this.speedNow, 0, damp(slip, dt));
+      // Still gliding: carry the hero on along his facing until the ice lets go.
+      if (slip < 5 && this.speedNow > 0.4) level.move(this.pos, Math.sin(this.yaw) * this.speedNow * dt, Math.cos(this.yaw) * this.speedNow * dt, this.radius);
     }
   }
 
@@ -1355,10 +1366,10 @@ export class Player {
     }
     r.model.rotation.y = spin;
     a.update(dt, this.state === 'free' || this.state === 'drink' ? this.speedNow : 0);
-    // Footsteps: two per locomotion cycle, on grass in the forest and stone in the temple.
+    // Footsteps: two per locomotion cycle, wet in water and hard on stone, ice, bone and paving.
     const half = Math.floor(a.stridePhase * 2);
     if (this.speedNow > 1.2 && half !== this.lastStep && this.state === 'free') {
-      this.game.audio.play(this.pos.z > -44 ? 'stepGrass' : 'stepStone');
+      this.game.audio.play(this.game.level.inWater(this.pos.x, this.pos.z) ? 'stepWater' : HARD_FLOORS.has(this.game.level.floorAt(this.pos.x, this.pos.z) ?? '') ? 'stepStone' : 'stepGrass');
     }
     this.lastStep = half;
 

@@ -214,6 +214,14 @@ const fbm = (x: number, z: number) => noise2(x * 0.06, z * 0.06) * 0.55 + noise2
 
 /** Max standing-height step between neighbouring 0.5 m cells before it counts as a cliff. */
 const STEP = 0.42;
+/** How far below the water surface the shore sits where the water laps it. */
+const SHORE = 0.15;
+/**
+ * Deepest water the hero can wade through. Anything deeper is not walkable, and because the walk grid and
+ * the rendered surface are carved by the very same formula, the blocked edge sits exactly where the water
+ * visibly turns deep — no invisible walls on open water, no walking on painted depth.
+ */
+export const WADE_MAX = 1.15;
 
 export class Terrain {
   /** Fine walk grid (0.5 m). */
@@ -224,6 +232,8 @@ export class Terrain {
   readonly floor: Uint8Array;
   /** 1 where a cell is a bridge deck. */
   readonly deck: Uint8Array;
+  /** Depth of standing water over each fine cell (0 where dry): wading cells are walkable but slow. */
+  readonly wet: Float32Array;
   /** Coarse ground grid (1 m nodes) covering the whole terrain mesh. */
   readonly gx0: number; readonly gz0: number; readonly gnx: number; readonly gnz: number;
   readonly ground: Float32Array;
@@ -260,6 +270,7 @@ export class Terrain {
     this.H = new Float32Array(fn);
     this.floor = new Uint8Array(fn).fill(255);
     this.deck = new Uint8Array(fn);
+    this.wet = new Float32Array(fn);
     this.bakeGround();
     this.bakeWalk();
   }
@@ -356,13 +367,27 @@ export class Terrain {
         if (!this.inside(x, z, tmp)) { this.H[k] = this.groundAt(x, z); continue; }
         let h = tmp.h, ok = true;
         if (!tmp.deck) {
+          // Shore slope and basin, carved exactly as the coarse ground is (see carve()), so the standing
+          // height under the water matches the bed the player can see through the surface.
           for (const w of this.waters) {
             if (x < w.bb[0] || x > w.bb[2] || z < w.bb[1] || z > w.bb[3]) continue;
             w.sd(x, z, hit);
-            if (hit.d < 0.45) ok = false;
+            if (hit.d > 3.5) continue;
             const lv = w.def.line ? hit.h : (w.def.level ?? 0);
-            if (hit.d < 3.5) h = Math.min(h, lv - 0.15 + Math.max(0, h - lv + 0.15) * smooth(0, 3.5, hit.d));
+            h = Math.min(h, hit.d < 0
+              ? lv - SHORE - w.def.depth * smooth(0, 2.5, -hit.d)
+              : lv - SHORE + Math.max(0, h - lv + SHORE) * smooth(0, 3.5, hit.d));
           }
+          // Then the depth of the water standing over that bed: shallow is walkable (wading), deep is not.
+          let depth = 0;
+          for (const w of this.waters) {
+            if (x < w.bb[0] || x > w.bb[2] || z < w.bb[1] || z > w.bb[3]) continue;
+            w.sd(x, z, hit);
+            if (hit.d > 1.6) continue;
+            depth = Math.max(depth, (w.def.line ? hit.h : (w.def.level ?? 0)) - h);
+          }
+          if (depth > 0.03) this.wet[k] = depth;
+          if (depth > WADE_MAX) ok = false;
         }
         this.H[k] = h;
         this.floor[k] = tmp.floor;
@@ -383,6 +408,8 @@ export class Terrain {
           if (ii >= this.fnx || jj < 0 || jj >= this.fnz) continue;
           const kk = jj * this.fnx + ii;
           if (!inRegion[kk]) continue;
+          // A shelving river bed is not a cliff: you wade down it.
+          if (this.wet[k] > 0.03 || this.wet[kk] > 0.03) continue;
           if (Math.abs(this.H[kk] - h) > STEP * (di && dj ? 1.414 : 1)) cliff.push(k, kk);
         }
       }
@@ -421,6 +448,21 @@ export class Terrain {
   walkableAt(x: number, z: number) {
     const k = this.fineIndex(x, z);
     return k >= 0 && this.walk[k] === 1;
+  }
+
+  /** Depth of standing water the hero is wading through at a point (0 on dry land), bilinear. */
+  wadeAt(x: number, z: number) {
+    const fx = (x - this.fx0) / this.cell, fz = (z - this.fz0) / this.cell;
+    if (fx < 0 || fz < 0 || fx >= this.fnx - 1 || fz >= this.fnz - 1) return 0;
+    const i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j;
+    const k = j * this.fnx + i, W = this.wet;
+    return (W[k] * (1 - u) + W[k + 1] * u) * (1 - v) + (W[k + this.fnx] * (1 - u) + W[k + this.fnx + 1] * u) * v;
+  }
+
+  /** Height of the water surface the hero is standing in, or -Infinity on dry land. */
+  surfaceAt(x: number, z: number) {
+    const d = this.wadeAt(x, z);
+    return d > 0.03 ? this.heightAt(x, z) + d : -Infinity;
   }
 
   floorAt(x: number, z: number): Floor | null {

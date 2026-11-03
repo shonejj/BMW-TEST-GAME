@@ -15,12 +15,12 @@ import {
   banner, bigSkull, bonePile, boulder, brazierStand, hoodoo, iceSpire, overhang, paifang, ribArch, rockArch, stele, tent,
 } from './setpieces';
 import { Terrain, shapeDistance, type Floor, type Shape } from './terrain';
-import { buildIce, buildWater, waterTime } from './water';
-import { Explore, type ChestInfo, type CollectInfo, type EncounterInfo, type Spawned } from './explore';
+import { buildIce, buildWater, waterTime, WaterFx, WADE_MIN, type Sounder, type Splasher } from './water';
+import { Explore, newInteractive, type ChestInfo, type CollectInfo, type EncounterInfo, type Interactive, type MarkerKind, type Spawned } from './explore';
 import { LAYOUTS } from './layouts';
 import type { LayoutDef, PropPlace } from './layouts/types';
 
-export type { ChestInfo, CollectInfo, EncounterInfo, Spawned } from './explore';
+export type { ChestInfo, CollectInfo, EncounterInfo, Spawned, Interactive, InteractKind, MarkerKind } from './explore';
 
 /**
  * A chapter's map. Each chapter has its own hand-designed layout (src/world/layouts/*): a heightfield with
@@ -33,6 +33,7 @@ interface Rect { x0: number; x1: number; z0: number; z1: number }
 interface Circle { x: number; z: number; r: number }
 
 export interface Breakable {
+  kind: BreakableKind;
   def: BreakableDef;
   pos: THREE.Vector3;
   hp: number;
@@ -87,6 +88,9 @@ export class Level {
   explore: Explore | null = null;
   /** Index of the chapter whose map is built (-1 before the first build). */
   chapterIndex = -1;
+  /** Wading ripples/splashes, and the depth the hero is standing in. */
+  readonly waterFx = new WaterFx();
+  private readonly interactive = newInteractive();
 
   /** Exploration hooks (the game decides loot and spawns). */
   onChestOpen?: (c: ChestInfo) => void;
@@ -168,6 +172,7 @@ export class Level {
     this.zones.length = 0;
     this.route.length = 0;
     this.obstHash.clear();
+    this.waterFx.reset();
   }
 
   private load(index: number, chapter?: ChapterDef) {
@@ -229,6 +234,31 @@ export class Level {
 
   heightAt(x: number, z: number) {
     return this.terrain.heightAt(x, z);
+  }
+
+  /** Depth of standing water at a point (0 on dry land). Shallow water is walkable; deep water is not. */
+  wadeAt(x: number, z: number) {
+    return this.terrain.wadeAt(x, z);
+  }
+
+  /** Surface of the water the hero is wading in, or -Infinity on dry land. */
+  waterSurfaceAt(x: number, z: number) {
+    return this.terrain.surfaceAt(x, z);
+  }
+
+  /** Floor material under a point (used for footstep sounds). */
+  floorAt(x: number, z: number) {
+    return this.terrain.floorAt(x, z);
+  }
+
+  /** True while the hero is wading (ankle-deep or more). */
+  inWater(x: number, z: number) {
+    return this.terrain.wadeAt(x, z) > WADE_MIN;
+  }
+
+  /** Steps the wading effects (ripples, splashes, entry/exit burst). */
+  updateWater(dt: number, x: number, z: number, speed: number, vfx: Splasher, audio: Sounder) {
+    this.waterFx.update(dt, this.terrain, x, z, speed, vfx, audio);
   }
 
   /** Height of the rendered ground (under bridges this is the stream bed, not the deck). */
@@ -343,6 +373,47 @@ export class Level {
   /** Index of the zone whose area holds this point, or -1. */
   zoneIndexAt(x: number, z: number) {
     return this.zones.findIndex((zn) => shapeDistance(zn.trigger, x, z) <= 0);
+  }
+
+  /**
+   * Nearest interactive thing to (x, z) for the contextual prompt: chests, collectables, braziers,
+   * shortcut gates, heavy breakables, shrines and the seals that block the way on. Reuses one object, so
+   * calling it every frame allocates nothing.
+   */
+  nearestInteractive(x: number, z: number): Interactive | null {
+    const out = this.interactive;
+    const found = this.explore?.nearest(x, z, out) ?? null;
+    let best = found ? found.dist : Infinity;
+    const take = (kind: Interactive['kind'], verb: string, ix: number, iy: number, iz: number, range: number, note?: string) => {
+      const d = Math.hypot(x - ix, z - iz);
+      if (d > range || d >= best) return;
+      best = d;
+      out.kind = kind; out.verb = verb; out.x = ix; out.y = iy; out.z = iz; out.dist = d; out.note = note;
+    };
+    // Only the sturdy props get a prompt: barrels and urns everywhere would be noise.
+    for (const b of this.breakables) {
+      if (b.broken || b.def.hp < 2) continue;
+      const rubble = b.kind === 'rubble';
+      take(rubble ? 'rubble' : 'breakable', rubble ? 'Attack to clear the way' : 'Attack to break',
+        b.pos.x, b.pos.y + b.def.radius + 0.6, b.pos.z, b.def.radius + 3.2);
+    }
+    for (const sh of this.shrines) {
+      take('shrine', sh.lit ? 'Rest at the shrine' : 'Light the shrine', sh.pos.x, sh.pos.y + 2.0, sh.pos.z, 5);
+    }
+    // Seals across the path: the red barrier reads as "no", so say what opens it.
+    for (const g of this.gates) {
+      if (!g.active) continue;
+      const cx = clamp(x, g.x0, g.x1);
+      take('seal', 'Sealed · defeat the yaoguai here', cx, this.heightAt(cx, g.z) + 2.2, g.z, 6);
+    }
+    return best === Infinity ? null : out;
+  }
+
+  /** Minimap markers: chests, collectables, braziers, shortcuts and shrines. */
+  markers(): { x: number; z: number; kind: MarkerKind }[] {
+    const out = this.explore?.markers() ?? [];
+    for (const s of this.shrines) out.push({ x: s.pos.x, z: s.pos.z, kind: 'shrine' });
+    return out;
   }
 
   /** True while an optional guarded encounter is being fought. */
@@ -744,7 +815,7 @@ export class Level {
     def.mesh.rotation.y = this.rng() * 6;
     def.mesh.userData.dynamic = true;
     this.group.add(def.mesh);
-    this.breakables.push({ def, pos: new THREE.Vector3(x, y, z), hp: def.hp, broken: false });
+    this.breakables.push({ kind, def, pos: new THREE.Vector3(x, y, z), hp: def.hp, broken: false });
   }
 
   private buildGates() {

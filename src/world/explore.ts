@@ -31,6 +31,28 @@ export interface EncounterInfo {
 /** What the game hands back for spawned encounter enemies (the Enemy class satisfies it). */
 export interface Spawned { alive: boolean }
 
+export type MarkerKind = 'chest' | 'item' | 'shortcut' | 'brazier' | 'shrine';
+
+/** Kinds of thing the contextual prompt can describe. */
+export type InteractKind =
+  | 'chest' | 'chestSealed' | 'item' | 'door' | 'doorBarred' | 'brazier'
+  | 'breakable' | 'rubble' | 'shrine' | 'seal';
+
+/** One prompt candidate. Reused between frames, so never hold on to it. */
+export interface Interactive {
+  kind: InteractKind;
+  /** What the player should do, in words. */
+  verb: string;
+  x: number;
+  y: number;
+  z: number;
+  dist: number;
+  /** Extra detail (brazier progress, and so on). */
+  note?: string;
+}
+
+export const newInteractive = (): Interactive => ({ kind: 'chest', verb: '', x: 0, y: 0, z: 0, dist: 0 });
+
 export interface ExploreHooks {
   onChestOpen?: (c: ChestInfo) => void;
   onCollect?: (c: CollectInfo) => void;
@@ -253,11 +275,54 @@ export class Explore {
 
   /** Chest/collectable/encounter markers for the minimap. */
   markers() {
-    const out: { x: number; z: number; kind: 'chest' | 'item' | 'shortcut' }[] = [];
+    const out: { x: number; z: number; kind: MarkerKind }[] = [];
     for (const c of this.chests) if (c.state === 'closed') out.push({ x: c.group.position.x, z: c.group.position.z, kind: 'chest' });
     for (const i of this.items) if (!i.taken) out.push({ x: i.mesh.position.x, z: i.mesh.position.z, kind: 'item' });
     for (const d of this.doors) if (!d.open) out.push({ x: d.mesh.position.x, z: d.mesh.position.z, kind: 'shortcut' });
+    for (const q of this.puzzles) if (!q.solved) for (const b of q.braziers) if (!b.lit) out.push({ x: b.pos.x, z: b.pos.z, kind: 'brazier' });
     return out;
+  }
+
+  /**
+   * Nearest thing the hero could act on, for the on-screen prompt. Fills `out` and returns it (or null),
+   * so scanning costs no allocation per frame. Closer wins, with a small bias towards things you can act
+   * on right now over things that are still locked.
+   */
+  nearest(x: number, z: number, out: Interactive): Interactive | null {
+    let best = Infinity;
+    const take = (kind: InteractKind, verb: string, ix: number, iy: number, iz: number, range: number, note?: string) => {
+      const d = Math.hypot(x - ix, z - iz);
+      if (d > range || d >= best) return;
+      best = d;
+      out.kind = kind; out.verb = verb; out.x = ix; out.y = iy; out.z = iz; out.dist = d; out.note = note;
+    };
+    for (const c of this.chests) {
+      if (c.state !== 'closed') continue;
+      const p = c.group.position;
+      if (c.sealed) {
+        take('chestSealed', this.puzzles.some((q) => q.chest === c.def.id) ? 'Sealed · light the braziers' : 'Sealed · defeat its guardian', p.x, p.y + 1.1, p.z, 4.5);
+      } else take('chest', 'Open', p.x, p.y + 1.0, p.z, 4);
+    }
+    for (const it of this.items) {
+      if (it.taken) continue;
+      const p = it.mesh.position;
+      take('item', it.def.kind === 'lore' ? 'Read' : 'Take', p.x, it.base + 1.0, p.z, 3);
+    }
+    for (const d of this.doors) {
+      if (d.open) continue;
+      const fx = d.def.from[0], fz = d.def.from[1];
+      if (Math.hypot(x - fx, z - fz) < 6) take('door', 'Unbar the gate', fx, this.world.heightAt(fx, fz) + 1.6, fz, 6);
+      else take('doorBarred', 'Barred from the other side', d.mesh.position.x, d.mesh.position.y + 2.4, d.mesh.position.z, 4.5);
+    }
+    for (const q of this.puzzles) {
+      if (q.solved) continue;
+      const total = q.braziers.length, lit = q.braziers.filter((b) => b.lit).length;
+      for (const b of q.braziers) {
+        if (b.lit) continue;
+        take('brazier', 'Light the brazier', b.pos.x, b.pos.y + 2.1, b.pos.z, 5, `${lit}/${total} lit`);
+      }
+    }
+    return best === Infinity ? null : out;
   }
 
   private unseal(key: string) {
