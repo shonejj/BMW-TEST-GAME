@@ -689,7 +689,8 @@ export class Player {
           else if (this.heavyStance === 'pillar') this.doPillarCrash();
           else this.doThrustLunge();
         }
-        if (k >= 1) { this.trail.active = false; this.landTimer = 0.02; this.setState('free'); }
+        // Only the thrust heavy leaves the ground, so only it lands.
+        if (k >= 1) { this.trail.active = false; if (this.heavyStance === 'thrust') this.landTimer = 0.02; this.setState('free'); }
         this.speedNow = 0;
         break;
       }
@@ -1454,7 +1455,7 @@ export class Player {
       this.landTimer -= dt;
       if (this.landTimer <= 0) {
         this.squash = Math.max(this.squash, 0.8);
-        this.game.vfx.dustBurst(this.pos, 10, 0.9);
+        this.game.vfx.dust.emit(this.pos.x, this.pos.y + 0.1, this.pos.z, { count: 6, radius: 0.5, speed: [1, 2.5], up: [0.3, 1], life: [0.3, 0.7], size: [0.25, 0.5], color: 0x6c6458, color2: 0x8f877a, gravity: 1, drag: 3 });
         this.game.audio.play('stepStone');
         this.game.camRig.shake(0.12, 0.1);
       }
@@ -1464,8 +1465,11 @@ export class Player {
     const half = Math.floor(a.stridePhase * 2);
     if (this.speedNow > 1.2 && half !== this.lastStep && this.state === 'free') {
       this.game.audio.play(this.pos.z > -44 ? 'stepGrass' : 'stepStone');
-      // A puff of dust under the planted foot sells the weight of the stride.
-      if (this.speedNow > 4.2) this.game.vfx.dustBurst(this.pos, 3, 0.35);
+      // A small scuff of dust under the planted foot sells the weight of the stride. Deliberately
+      // tiny: a full dust burst here would fog the hero every other step.
+      if (this.speedNow > 4.2) {
+        this.game.vfx.dust.emit(this.pos.x, this.pos.y + 0.08, this.pos.z, { count: 2, radius: 0.25, speed: [0.3, 1], up: [0.2, 0.7], life: [0.25, 0.45], size: [0.14, 0.26], color: 0x7a7266, color2: 0x9a9286, gravity: 1.5, drag: 4 });
+      }
     }
     this.lastStep = half;
 
