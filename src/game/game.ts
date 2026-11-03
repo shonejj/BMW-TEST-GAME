@@ -203,6 +203,7 @@ export class Game {
     this.applyChapter(0);
     this.audio.setVolume(this.settings.volume);
     this.camRig.shakeScale = this.settings.screenShake;
+    this.renderer.flashScale = this.settings.screenShake;
     this.audio.setMusicVolume(this.settings.music);
     this.updateParticleScale();
     this.resetWorld(0);
@@ -422,7 +423,7 @@ export class Game {
       this.rain.setVisibleCount(p.quality === 'low' ? 350 : p.quality === 'medium' ? 650 : 1400);
       this.updateParticleScale();
     }
-    if (p.screenShake !== undefined) this.camRig.shakeScale = p.screenShake;
+    if (p.screenShake !== undefined) { this.camRig.shakeScale = p.screenShake; this.renderer.flashScale = p.screenShake; }
     if (p.look) { this.renderer.setLook(p.look); this.updateParticleScale(); }
     if (p.camera) this.setCameraMode(p.camera, false);
     if (p.dynamicRes === false) { this.renderer.dynamicScale = 1; this.renderer.applyPixelRatio(); this.updateParticleScale(); }
@@ -608,6 +609,8 @@ export class Game {
   strike(o: StrikeOptions): number {
     let hits = 0;
     let crit = false;
+    /** Biggest share of a victim's health taken by this blow; hit-stop and shake scale with it. */
+    let heaviest = 0;
     for (const e of this.enemies) {
       if (!e.alive) continue;
       const dx = e.pos.x - o.origin.x, dz = e.pos.z - o.origin.z;
@@ -631,10 +634,11 @@ export class Game {
         e.burn = 3;
         e.burnDps = Math.max(e.burnDps * 0.5, roll.amount * 0.35);
       }
-      this.tmp.set(e.pos.x - dir.x * e.radius * 0.5, e.pos.y, e.pos.z - dir.z * e.radius * 0.5);
-      this.vfx.impact(this.tmp, o.color, roll.crit ? 16 : 8);
+      this.tmp.set(e.pos.x - dir.x * e.radius * 0.5, e.pos.y + Math.min(1.4, e.radius + 0.5), e.pos.z - dir.z * e.radius * 0.5);
+      this.vfx.impactDir(this.tmp, dir, o.color, roll.crit ? 16 : 8, true);
       hits++;
       crit ||= roll.crit;
+      heaviest = Math.max(heaviest, roll.amount / Math.max(1, e.maxHp));
     }
     for (const b of this.level.breakables) {
       if (b.broken) continue;
@@ -650,8 +654,12 @@ export class Game {
     }
     if (hits > 0) {
       this.audio.play(crit ? 'crit' : 'hit');
-      this.hitstop(crit ? 0.07 : 0.045);
-      this.camRig.shake(crit ? 0.3 : 0.15, 0.12);
+      // Freeze frames and shake scale with how hard the blow landed, so chip damage and
+      // a staggering crit never feel the same.
+      const weight = Math.min(1, heaviest * 4) + (crit ? 0.35 : 0) + Math.min(0.3, (hits - 1) * 0.1);
+      this.hitstop(0.03 + 0.07 * weight);
+      this.camRig.shake(0.12 + 0.28 * weight, 0.12);
+      if (weight > 0.8) this.renderer.punch(0.22 * weight, o.color);
       this.player.heal(this.player.stats.lifeOnHit * Math.min(hits, 3));
       if (!o.skill) this.player.mana = Math.min(this.player.stats.maxMana, this.player.mana + 2 * Math.min(hits, 3));
     }
@@ -712,7 +720,14 @@ export class Game {
 
   private onEnemyKilled(e: Enemy) {
     this.kills++;
-    this.vfx.soul(e.pos, e.isBoss ? 2.5 : e.kind === 'spiderling' ? 0.7 : 1);
+    const size = e.isBoss ? 2.5 : e.kind === 'spiderling' ? 0.7 : 1;
+    this.vfx.soul(e.pos, size);
+    this.vfx.embers(e.pos, size * 1.4, e.isBoss ? 8 : 3);
+    this.vfx.burst(this.tmp.set(e.pos.x, e.pos.y + size, e.pos.z), size * 2.4, 0xd8ffe0);
+    if (e.isBoss) {
+      this.renderer.punch(0.6, 0xffffff);
+      this.hitstop(0.18);
+    }
     this.bestiary[e.kind] = (this.bestiary[e.kind] ?? 0) + 1;
     this.gainXp(e.xp);
     this.player.onKill();
@@ -1048,12 +1063,20 @@ export class Game {
   }
 
   onPerfectDodge() {
+    // A parry-grade read: freeze, flash, bloom, and a ring of sparks so the window is unmistakable.
+    this.hitstop(0.1);
     this.slowmo(0.45);
     this.hud.toast('Perfect dodge! +1 Focus', '#ffe08a');
     this.audio.play('perfect');
-    this.vfx.flash(this.tmp.set(this.player.pos.x, this.player.pos.y + 1, this.player.pos.z), 2, COLORS.goldHot, 0.2);
-    this.vfx.shockwave(this.player.pos, 2.5, COLORS.goldHot, 0.4);
-    this.vfx.twinkle(this.player.pos, 1.5, 6);
+    const p = this.player.pos;
+    this.vfx.flash(this.tmp.set(p.x, p.y + 1, p.z), 2, COLORS.goldHot, 0.2);
+    this.vfx.burst(this.tmp.set(p.x, p.y + 1.1, p.z), 4.5, 0xfff0c0);
+    this.vfx.shockwave(p, 2.5, COLORS.goldHot, 0.4);
+    this.vfx.twinkle(p, 1.5, 8);
+    this.vfx.embers(p, 1.6, 3, 0xfff0c0);
+    this.renderer.punch(0.45, 0xfff0c0);
+    this.camRig.shake(0.2, 0.12);
+    this.rumble(0.4, 120);
   }
 
   /** Immobilize spell: freeze every enemy inside the golden seal. */
@@ -1074,7 +1097,12 @@ export class Game {
   onBossBroken(boss: Enemy) {
     this.hud.toast(`Broken! The ${boss.def.name} reels`, '#ffd46a');
     this.vfx.flash(this.tmp.set(boss.pos.x, boss.pos.y + 3, boss.pos.z), 4, COLORS.goldHot, 0.25);
+    this.vfx.burst(this.tmp.set(boss.pos.x, boss.pos.y + 3, boss.pos.z), 8, 0xfff0c0);
+    this.vfx.embers(boss.pos, 3, 5, 0xfff0c0);
     this.audio.play('perfect');
+    this.hitstop(0.14);
+    this.renderer.punch(0.5, 0xfff0c0);
+    this.camRig.shake(0.5, 0.3);
     this.slowmo(0.25);
   }
 

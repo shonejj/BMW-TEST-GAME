@@ -7,8 +7,13 @@ import * as THREE from 'three';
  * keeps every pixel crisp however big the sprite is on screen. Everything is one instanced draw call.
  */
 
-export type PixelFxName = 'impact' | 'slash' | 'dust' | 'fire' | 'spark' | 'soul' | 'miasma' | 'ring';
-const ROWS: PixelFxName[] = ['impact', 'slash', 'dust', 'fire', 'spark', 'soul', 'miasma', 'ring'];
+export type PixelFxName =
+  | 'impact' | 'slash' | 'dust' | 'fire' | 'spark' | 'soul' | 'miasma' | 'ring'
+  | 'blood' | 'crack' | 'burst' | 'ember';
+const ROWS: PixelFxName[] = [
+  'impact', 'slash', 'dust', 'fire', 'spark', 'soul', 'miasma', 'ring',
+  'blood', 'crack', 'burst', 'ember',
+];
 const FRAMES = 8;
 const PX = 32;
 
@@ -20,6 +25,9 @@ const PAL = {
   dust: [0xb8ac98, 0x9a8e7a, 0x7a705e, 0x5a5244, 0x3a3428].map(hex),
   jade: [0xf0fff0, 0xa8ffc8, 0x5ae890, 0x22a860, 0x0e5a34].map(hex),
   miasma: [0xc8a8ff, 0x8a5ad0, 0x5a2a8a, 0x2a1440, 0x120a1c].map(hex),
+  blood: [0xff9a8a, 0xe04a3a, 0xa02020, 0x5e1414, 0x2a0a0a].map(hex),
+  stone: [0xa8a096, 0x80786c, 0x5a544a, 0x3a352e, 0x1e1a16].map(hex),
+  arcane: [0xffffff, 0xd8e8ff, 0x8ab4ff, 0x4a6ad0, 0x1e2a6a].map(hex),
 };
 /** 4×4 Bayer matrix for ordered-dither fades. */
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
@@ -30,7 +38,8 @@ const hash = (x: number, y: number, s: number) => {
 
 function drawAtlas(): HTMLCanvasElement {
   const c = document.createElement('canvas');
-  c.width = c.height = PX * FRAMES;
+  c.width = PX * FRAMES;
+  c.height = PX * ROWS.length;
   const g = c.getContext('2d')!;
   const img = g.createImageData(c.width, c.height);
   const put = (row: number, frame: number, x: number, y: number, col: RGB) => {
@@ -124,6 +133,50 @@ function drawAtlas(): HTMLCanvasElement {
           const w = 2.4 * (1 - t) + 0.7;
           if (Math.abs(r - R) < w && !fade(x, y, Math.max(0, t - 0.5) * 1.6)) put(7, f, x, y, PAL.hot[Math.min(5, Math.floor(t * 4))]);
         }
+        // blood / essence: a cone of droplets thrown out one way, falling as they fly.
+        {
+          const sp = hash(Math.floor(x / 2), Math.floor(y / 2), 7);
+          const reach = 3 + 13 * t;
+          const drop = r < reach && r > reach - 7 && dx > -2 && Math.abs(dy - (r * r) * 0.025 * t * 4) < 5 && sp > 0.62;
+          if ((r < 4 * (1 - t) + 1 || drop) && !fade(x, y, Math.max(0, t - 0.25) * 1.5)) {
+            put(8, f, x, y, PAL.blood[Math.min(4, Math.floor(r / 6) + Math.floor(t * 2))]);
+          }
+        }
+        // crack: a jagged star of fissures splitting the ground, glowing then going dark.
+        {
+          const spokes = 5;
+          const seg = Math.floor(((a + Math.PI) / (Math.PI * 2)) * spokes);
+          const jag = (hash(seg, Math.floor(r / 3), 11) - 0.5) * 0.5;
+          const centre = ((a + Math.PI) / (Math.PI * 2)) * spokes - seg - 0.5;
+          const width = (0.1 + 0.16 * (1 - r / 16)) * (1 + jag);
+          if (Math.abs(centre) < width && r < 2 + 14 * Math.min(1, t * 2.2) && !fade(x, y, Math.max(0, t - 0.6) * 2.5)) {
+            const hotK = Math.max(0, 1 - t * 2.5);
+            put(9, f, x, y, hotK > 0.35 ? PAL.hot[Math.min(5, 2 + Math.floor(r / 7))] : PAL.stone[Math.min(4, 2 + Math.floor(r / 9))]);
+          }
+        }
+        // burst: an arcane bloom — a filled core, a petal rosette, then a thin ring left behind.
+        {
+          const R = 13 * Math.sin(Math.min(1, t * 1.15) * Math.PI * 0.5);
+          const petal = R * (0.72 + 0.28 * Math.cos(a * 6 - t * 3));
+          const inner = Math.max(0, 6 * (1 - t * 1.6));
+          if (r < inner) put(10, f, x, y, PAL.arcane[Math.min(4, Math.floor((r / Math.max(inner, 0.1)) * 3))]);
+          else if (r < petal && r > petal - (3.2 - t * 2) && !fade(x, y, Math.max(0, t - 0.3) * 1.5)) {
+            put(10, f, x, y, PAL.arcane[Math.min(4, 1 + Math.floor(t * 3))]);
+          }
+        }
+        // ember: a handful of motes drifting up and winking out (deaths dissolve into these).
+        {
+          for (let i = 0; i < 5; i++) {
+            const ex = 6 + hash(i, 0, 13) * 20;
+            const drift = Math.sin(t * 4 + i * 2) * 2.5;
+            const ey = 26 - t * (14 + hash(i, 1, 17) * 12) - hash(i, 2, 19) * 4;
+            const sz = (1 - t * 0.6) * (1.2 + hash(i, 3, 23));
+            if (Math.hypot(x - ex - drift, y - ey) < sz && !fade(x, y, Math.max(0, t - 0.45) * 1.9)) {
+              put(11, f, x, y, PAL.hot[Math.min(5, 1 + Math.floor(t * 4))]);
+              break;
+            }
+          }
+        }
       }
     }
   }
@@ -152,7 +205,7 @@ const VERT = /* glsl */ `
     gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
     vec2 local = position.xy + 0.5;
     local.x = mix(local.x, 1.0 - local.x, aExtra.y);
-    vUv = (vec2(frame, ${(FRAMES - 1).toFixed(1)} - aFx.x) + local) / ${FRAMES.toFixed(1)};
+    vUv = (vec2(frame, ${(ROWS.length - 1).toFixed(1)} - aFx.x) + local) / vec2(${FRAMES.toFixed(1)}, ${ROWS.length.toFixed(1)});
     vTint = vec3(aExtra.z, aExtra.w, aTintB);
   }`;
 

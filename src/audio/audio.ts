@@ -21,7 +21,7 @@ export type Sfx =
   | 'skitter' | 'bite' | 'roar' | 'fire' | 'whirl' | 'slam' | 'gale' | 'hurt' | 'dodge'
   | 'transform' | 'seal' | 'web' | 'legendary' | 'death'
   | 'heavyCharge' | 'chargeLevel' | 'heavyHit' | 'drink' | 'perfect' | 'immobilize' | 'ringfire' | 'focus'
-  | 'ghoulHurt' | 'ghoulDie' | 'creatureDie' | 'stepGrass' | 'stepStone' | 'stepWater' | 'splash' | 'splashBig'
+  | 'ghoulHurt' | 'ghoulDie' | 'creatureDie' | 'stepGrass' | 'stepStone' | 'stepWater' | 'splash' | 'splashBig' | 'windup' | 'dissolve'
   | 'uiMove' | 'uiSelect' | 'uiBack';
 
 type SetName = keyof typeof manifest.sfx;
@@ -77,6 +77,10 @@ const SFX: Record<Sfx, Part[]> = {
   ghoulHurt: [{ set: 'ghoul', vol: 0.35, rate: [0.95, 1.15] }],
   ghoulDie: [{ set: 'ghoul', vol: 0.55, rate: [0.75, 0.85] }],
   creatureDie: [{ set: 'creatureDie', vol: 0.4, rate: [1.3, 1.7] }],
+  // Enemy wind-up tell: a low scrape of weight gathering, so a telegraph is heard as well as seen.
+  windup: [{ set: 'unsheathe', vol: 0.3, rate: [0.6, 0.72] }, { set: 'cloth', vol: 0.28, rate: [0.7, 0.8] }],
+  /** A body coming apart into embers. */
+  dissolve: [{ set: 'spell', vol: 0.3, rate: [1.3, 1.5] }, { set: 'cloth', vol: 0.22, rate: [1.2, 1.4] }],
   stepGrass: [{ set: 'stepGrass', vol: 0.12, rate: [0.9, 1.1] }],
   stepStone: [{ set: 'stepStone', vol: 0.14, rate: [0.9, 1.1] }],
   stepWater: [{ splash: 0.12, vol: 0.14 }, { set: 'stepGrass', vol: 0.05, rate: [0.7, 0.85] }],

@@ -135,6 +135,15 @@ export abstract class Enemy {
   protected flash = 0;
   /** Squash & stretch on hit (game-feel): 1 right after a hit, eases back to 0. */
   protected squash = 0;
+  /** Flinch strength (1 right after a hit) and the direction the blow came from. */
+  protected recoil = 0;
+  protected readonly hitDir = new THREE.Vector2(0, 1);
+  /** Lean the flinch into the root; skinned characters bend their spine instead. */
+  protected rootRecoil = true;
+  /** Anticipation crouch while winding up an attack (0..1); subclasses set it, the base eases it. */
+  protected windup = 0;
+  private emberT = 0;
+  private dissolved = false;
   protected baseScale = 1;
   protected knock = new THREE.Vector2();
   protected spawnT = 0;
@@ -175,6 +184,8 @@ export abstract class Enemy {
   onHit(dir: { x: number; z: number }, knock: number) {
     this.flash = 0.12;
     this.squash = 1;
+    this.recoil = 1;
+    this.hitDir.set(dir.x, dir.z);
     const resist = this.isBoss ? 0.05 : this.kind === 'armored' ? 0.35 : this.kind === 'bone' ? 0.6 : 1;
     this.knock.x += dir.x * knock * 6 * resist;
     this.knock.y += dir.z * knock * 6 * resist;
@@ -201,6 +212,20 @@ export abstract class Enemy {
     if (!this.alive) {
       this.deadTime += dt;
       this.animateDeath(dt);
+      // Dissolve: the body comes apart into drifting embers, then sinks away.
+      this.emberT -= dt;
+      if (this.emberT <= 0 && this.deadTime < 2) {
+        this.emberT = this.isBoss ? 0.1 : 0.16;
+        this.game.vfx.embers(this.pos, this.radius * 1.8, 1, 0xffe6a0);
+      }
+      if (!this.dissolved && this.deadTime > 1.1) {
+        this.dissolved = true;
+        this.game.audio.play('dissolve');
+        this.game.vfx.burst(this.tmpUp.set(this.pos.x, this.pos.y + this.radius, this.pos.z), this.radius * 2.6, 0xffe6b0);
+      }
+      const k = clamp((this.deadTime - 1.1) / 1, 0, 1);
+      const sc = this.baseScale * (1 - 0.22 * k * k);
+      this.root.scale.set(sc, sc, sc);
       if (this.deadTime > 2.2) this.dispose();
       return;
     }
@@ -245,10 +270,22 @@ export abstract class Enemy {
     for (const m of this.flashMats) m.emissive.setRGB(f + gold, f * 0.9 + gold * 0.75, f * 0.8 + gold * 0.15).add(m.userData.baseEmissive ?? BLACK);
     this.root.rotation.y = this.yaw;
     this.squash = Math.max(0, this.squash - dt * 7);
-    const sq = this.squash * this.squash * (this.isBoss ? 0.3 : 1);
+    this.recoil = Math.max(0, this.recoil - dt * 5.5);
+    this.windup = Math.max(0, this.windup - dt * 4);
+    // Flinch: the body is shoved the way the blow travelled, hardest for light foes.
+    if (this.rootRecoil && this.staggerT <= 0 && this.stunT <= 0) {
+      const r = this.recoil * this.recoil * (this.isBoss ? 0.1 : this.kind === 'bone' || this.kind === 'armored' ? 0.18 : 0.32);
+      const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+      this.root.rotation.x = -(this.hitDir.x * fx + this.hitDir.y * fz) * r;
+      this.root.rotation.z = (this.hitDir.x * fz - this.hitDir.y * fx) * r;
+    } else if (this.staggerT <= 0) this.root.rotation.z = 0;
+    // Impacts flatten the body; an attack wind-up coils it the other way (anticipation).
+    const sq = this.squash * this.squash * (this.isBoss ? 0.3 : 1) - this.windup * 0.35;
     this.root.scale.set(this.baseScale * (1 + 0.16 * sq), this.baseScale * (1 - 0.24 * sq), this.baseScale * (1 + 0.16 * sq));
     if (this.eliteRing) this.eliteRing.mesh.position.set(this.pos.x, this.pos.y + 0.06, this.pos.z);
   }
+
+  protected readonly tmpUp = new THREE.Vector3();
 
   hover() { return 0; }
   barHeight() { return 1.6; }
@@ -396,6 +433,8 @@ export class Spider extends Enemy {
       case 'windup': {
         this.yaw = approachAngle(this.yaw, toYaw, dt * (this.kind === 'armored' ? 2 : 4));
         const dur = this.kind === 'armored' ? 0.6 : 0.42;
+        // Anticipation: coil back harder the closer the strike gets.
+        this.windup = clamp(this.st / dur, 0, 1);
         if (this.st >= dur) this.setState('attack');
         break;
       }
@@ -407,12 +446,14 @@ export class Spider extends Enemy {
           const reach = this.kind === 'armored' ? 3.0 : 1.6 + this.radius;
           const da = Math.abs(wrapAngle(toYaw - this.yaw));
           if (d < reach + player.radius && da < 1.1) player.hurt(this.dmg, this.pos);
+          this.squash = 0.6;
           this.game.audio.play('bite');
         }
         if (this.st >= dur) this.setState('recover');
         break;
       }
       case 'leapwind':
+        this.windup = clamp(this.st / 0.85, 0, 1);
         if (this.st >= 0.85) this.setState('leap');
         break;
       case 'leap': {
@@ -463,6 +504,8 @@ export class Spider extends Enemy {
 
   private startWindup() {
     this.setState('windup');
+    this.game.audio.play('windup');
+    this.game.vfx.sparks.emit(this.pos.x, this.pos.y + this.radius * 0.8, this.pos.z, { count: 4, radius: this.radius * 0.7, speed: [0, 1], up: [0.5, 2], gravity: -1, life: [0.2, 0.45], color: COLORS.red, color2: 0xffb0a0, size: [0.15, 0.3] });
     const r = this.kind === 'armored' ? 3 : 1.6 + this.radius;
     const dur = this.kind === 'armored' ? 0.6 : 0.42;
     this.tele = this.game.vfx.telegraph(this.pos, r, dur + 0.1, { yaw: this.yaw, halfAngle: this.kind === 'armored' ? 1.0 : 0.8 });
@@ -476,6 +519,7 @@ export class Spider extends Enemy {
     // Stop short so we don't land inside walls.
     if (!this.game.level.isWalkable(this.leapTo.x, this.leapTo.z, this.radius)) this.leapTo.copy(this.pos);
     this.tele = this.game.vfx.telegraph(this.leapTo, 2.8, 0.85 + 0.55);
+    this.game.audio.play('windup');
     this.setState('leapwind');
   }
 
@@ -537,6 +581,8 @@ abstract class Humanoid extends Enemy {
     for (const mat of ch.flashMats) mat.userData.unique = true;
     this.registerFlashMats(ch.flashMats);
     this.anim = new Animator(ch.model, loco);
+    // Skinned foes bend their spine when hit instead of tipping the whole root over.
+    this.rootRecoil = false;
     // Settle into the idle pose now: enemies spawned during a cutscene don't update until it ends.
     this.anim.update(0, 0);
   }
@@ -547,6 +593,13 @@ abstract class Humanoid extends Enemy {
   }
 
   update(dt: number) {
+    // The flinch and the wind-up coil ride on the spine, on top of whatever clip is playing, so a
+    // foe visibly takes the blow without its attack animation being cut short.
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    const r = this.recoil * this.recoil;
+    this.anim.bias.lean = -(this.hitDir.x * fx + this.hitDir.y * fz) * r * 0.45 + this.windup * 0.12;
+    this.anim.bias.side = (this.hitDir.x * fz - this.hitDir.y * fx) * r * 0.35;
+    this.anim.bias.breathe = Math.sin(this.game.time * 1.3 + this.pos.x) * 0.018 * (1 - Math.min(1, this.speedNow));
     super.update(dt);
     if (this.removed) return;
     // Stagger and immobilize skip think(): show a flinch (or a frozen pose) instead of the base wobble.
@@ -572,9 +625,25 @@ abstract class Humanoid extends Enemy {
   }
 
   protected deathClip = clipWin('death2', 0, 2.45);
+  /** Second death clip, picked at random so a wave of foes doesn't fall in unison (null = one only). */
+  protected deathAlt: Clip | null = clipWin('death', 0, 2.35);
+  private deathPicked = false;
 
   protected animateDeath(dt: number) {
-    this.play(this.deathClip, this.deadTime / 1.3, 0.1);
+    if (!this.deathPicked) {
+      this.deathPicked = true;
+      if (this.deathAlt && Math.random() < 0.5) this.deathClip = this.deathAlt;
+      this.anim.bias.lean = 0;
+    }
+    // The blow that killed them still carries the body: a short slide, then it settles.
+    if (this.deadTime < 0.35) {
+      const sl = (1 - this.deadTime / 0.35) * 2.2 * dt;
+      this.game.level.move(this.pos, this.hitDir.x * sl, this.hitDir.y * sl, this.radius);
+    }
+    // Death plays a touch slow, then the body settles and topples the way it was hit.
+    this.play(this.deathClip, this.deadTime / 1.45, 0.12);
+    const settle = clamp((this.deadTime - 1.3) / 0.7, 0, 1);
+    this.anim.bias.lean = settle * 0.25;
     this.anim.update(dt, 0);
     if (this.deadTime > 1.5) this.root.position.y -= dt * 0.6;
     this.shadowVisible = this.deadTime < 1.3;
@@ -677,6 +746,7 @@ export class Ghoul extends Humanoid {
           this.setState('attack');
           const lead = (this.attack.hit - this.attack.from) / this.rate;
           this.tele = this.game.vfx.telegraph(this.pos, this.bd.reach, lead + 0.05, { yaw: this.yaw, halfAngle: 0.8 });
+          this.game.audio.play('windup');
         }
         break;
       case 'attack': {
@@ -685,6 +755,8 @@ export class Ghoul extends Humanoid {
         const k = this.st / dur;
         const hitK = (a.hit - a.from) / (a.to - a.from);
         if (k < hitK) this.yaw = approachAngle(this.yaw, toYaw, dt * 3);
+        // Anticipation up to the hit frame, then a pop as the blow lands.
+        this.windup = k < hitK ? clamp(k / Math.max(0.05, hitK), 0, 1) : 0;
         this.play(a, k, 0.08);
         const lunge = a.lunge ?? 3.5;
         if (k < hitK + 0.05) { this.walk(dt, Math.sin(this.yaw), Math.cos(this.yaw), k > hitK - 0.2 ? lunge : 0); want = -1; }
@@ -693,6 +765,8 @@ export class Ghoul extends Humanoid {
           this.tele = null;
           const da = Math.abs(wrapAngle(toYaw - this.yaw));
           if (d < this.bd.reach + player.radius && da < 1.1) player.hurt(this.dmg, this.pos);
+          this.squash = 0.55;
+          this.game.vfx.impactDir(this.tmpUp.set(this.pos.x + Math.sin(this.yaw) * this.bd.reach * 0.6, this.pos.y + 1.1, this.pos.z + Math.cos(this.yaw) * this.bd.reach * 0.6), { x: Math.sin(this.yaw), z: Math.cos(this.yaw) }, COLORS.red, 5);
           this.game.audio.play(this.bd.sound);
         }
         if (k >= 0.82) this.setState('recover');
@@ -766,13 +840,20 @@ export class Weaver extends Humanoid {
         }
         // Face where she walks so the stride matches; turn back to the player to shoot.
         if (want > 0) this.yaw = approachAngle(this.yaw, yawOf(dirX, dirZ), dt * 8);
-        if (this.shootCd <= 0 && d < 12 && this.game.player.alive) { this.state = 'shoot'; this.st = 0; this.shot = false; }
+        if (this.shootCd <= 0 && d < 12 && this.game.player.alive) {
+          this.state = 'shoot';
+          this.st = 0;
+          this.shot = false;
+          this.game.audio.play('windup');
+          this.game.vfx.telegraph(this.pos, 1.6, 0.5, { color: this.ck === 'frost' ? 0x8ad8ff : COLORS.red });
+        }
         break;
       }
       case 'shoot': {
         this.yaw = approachAngle(this.yaw, toYaw, dt * 10);
         const c = this.ck === 'archer' ? ARCHER_SHOOT : WEAVER_CAST;
         const len = this.ck === 'archer' ? 1.0 : 0.8;
+        this.windup = clamp(this.st / len, 0, 1);
         this.play(c, this.st / len, 0.08);
         if (!this.shot && this.st >= (c.hit - c.from) / (c.to - c.from) * len) {
           this.shot = true;
@@ -841,6 +922,7 @@ export class Boss extends Humanoid {
     this.rig = rig;
     this.hitPose = BOSS_BROKEN;
     this.deathClip = clipWin('death', 0, 2.35);
+    this.deathAlt = null;
     this.lift.position.y = 12;
     this.yaw = 0;
   }
@@ -904,8 +986,12 @@ export class Boss extends Humanoid {
           this.didHit = true;
           this.game.vfx.shockwave(this.pos, 9, this.rig.accent, 0.8, 0.2);
           this.game.vfx.dustBurst(this.pos, 30, 3);
+          this.game.vfx.crackPix(this.pos, 6, 3);
+          this.game.vfx.crack(this.pos, 4, 4, true);
           this.game.debris.burst(this.pos, 0x5e5a52, 12, 0.2, 1.3);
           this.game.camRig.shake(0.8, 0.6);
+          this.game.renderer.punch(0.55, 0xffd8a0);
+          this.squash = 1;
           this.game.audio.play('slam');
           this.game.audio.play('roar');
         }
@@ -924,8 +1010,10 @@ export class Boss extends Humanoid {
       }
       case 'sweep': {
         const wind = this.phase2 ? 0.65 : 0.85;
+        if (!this.didHit) this.windup = clamp(this.st / wind, 0, 1);
         if (!this.didHit && this.st >= wind) {
           this.didHit = true;
+          this.squash = 0.5;
           this.game.vfx.slash(this.pos, this.yaw, { radius: 6.5, arc: Math.PI * 1.05, colorA: 0x2bd06a, colorB: 0xd4ffd0, height: 1.6, dur: 0.35, reverse: Math.random() < 0.5 });
           const da = Math.abs(wrapAngle(toYaw - this.yaw));
           if (d < 6.5 + player.radius && da < 1.5) player.hurt(this.dmg, this.pos);
@@ -937,7 +1025,7 @@ export class Boss extends Humanoid {
       }
       case 'leap': {
         const wind = 0.5, air = 0.75;
-        if (this.st < wind) break;
+        if (this.st < wind) { this.windup = clamp(this.st / wind, 0, 1); break; }
         const k = clamp((this.st - wind) / air, 0, 1);
         this.pos.x = lerp(this.leapFrom.x, this.leapTo.x, k);
         this.pos.z = lerp(this.leapFrom.z, this.leapTo.z, k);
@@ -949,9 +1037,14 @@ export class Boss extends Humanoid {
           this.game.vfx.shockwave(this.pos, 5, this.rig.accent, 0.5, 0.2);
           this.game.vfx.shockwave(this.pos, 3, COLORS.red, 0.35);
           this.game.vfx.dustBurst(this.pos, 26, 2.5);
+          this.game.vfx.crackPix(this.pos, 5, 2);
+          this.game.vfx.crack(this.pos, 3.4, 3, true);
           this.game.debris.burst(this.pos, 0x5e5a52, 10, 0.2, 1.3);
           this.game.audio.play('slam');
           this.game.camRig.shake(0.8, 0.45);
+          this.game.renderer.punch(0.5, 0xffd8a0);
+          this.game.hitstop(0.1);
+          this.squash = 1;
         }
         if (this.st >= wind + air + 0.7) this.setState('recover');
         break;
@@ -1009,6 +1102,8 @@ export class Boss extends Humanoid {
     this.setState('sweep');
     this.yaw = this.faceYaw();
     this.game.vfx.telegraph(this.pos, 6.5, this.phase2 ? 0.7 : 0.9, { yaw: this.yaw, halfAngle: 1.5 });
+    this.game.audio.play('windup');
+    this.windup = 1;
   }
 
   private startLeap() {
@@ -1020,6 +1115,7 @@ export class Boss extends Humanoid {
     if (!this.game.level.isWalkable(p.x, p.z, this.radius)) this.leapTo.copy(this.pos);
     this.game.vfx.telegraph(this.leapTo, 4.2, 1.25);
     this.game.audio.play('roar');
+    this.windup = 1;
   }
 
   private startMiasma() {

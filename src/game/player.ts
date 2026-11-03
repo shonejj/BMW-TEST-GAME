@@ -60,7 +60,10 @@ const SLAM = move('groundPound', 0.0, 1.0, 0.3);
 const FLAME = [move('slashA', 0.05, 0.43, 0.24), move('slashB', 0.08, 0.53, 0.26), move('uppercut', 0.0, 0.5, 0.15)];
 const TRANSFORM = move('transform', 0.0, 2.1, 0.75);
 const DEATH = move('death', 0.0, 2.35);
+/** Hit reactions, by how hard the blow landed: a chest flinch, a head snap, a full knockback. */
 const HURT = move('hit', 0.0, 0.33);
+const HURT_HEAD = move('hit2', 0.0, 0.4);
+const HURT_BIG = move('knockback', 0.0, 0.83);
 
 type State = 'free' | 'attack' | 'charge' | 'heavy' | 'special' | 'dodge' | 'cast' | 'flame' | 'slam' | 'gale' | 'drink' | 'transform' | 'dead';
 type Special = 'resolute' | 'sweep' | 'sting';
@@ -139,6 +142,20 @@ export class Player {
   private healLeft = 0;
   private hurtFlash = 0;
   private hurtT = 0;
+  /** Hit reaction currently playing and how long it lasts. */
+  private hurtMove: Move = HURT;
+  private hurtDur = 0.33;
+  /** Squash & stretch on the body: >0 squashes (impacts), <0 stretches (lunges, leaps). */
+  private squash = 0;
+  /** Recoil kick of the spine, in radians, eased back every frame. */
+  private recoil = 0;
+  private recoilSide = 0;
+  /** Counts down to a landing thump (dust + squash) after a move that left the ground. */
+  private landTimer = 0;
+  /** Smoothed turn rate, for banking into turns. */
+  private turnRate = 0;
+  private lastYaw = Math.PI;
+  private idleSway = 0;
   private equipped: Inventory['equipped'] = {};
   private lastStep = 0;
   private fireTrailTimer = 0;
@@ -155,6 +172,7 @@ export class Player {
     this.anim = new Animator(this.rig.root, {
       idle: 'idle',
       moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }, { name: 'sprint', speed: 6.2 }],
+      breaks: ['lookAround', 'foldArms'],
     });
     this.pos = this.root.position;
     this.light = new THREE.PointLight(0xffb070, 30, 16, 1.6);
@@ -420,15 +438,33 @@ export class Player {
     const reduced = Math.max(1, Math.round(amount * (100 / (100 + Math.max(0, this.stats.armor) * 1.2)) * mult));
     this.hp -= reduced;
     this.hurtFlash = 0.25;
-    if (this.state === 'free') this.hurtT = HURT.to - HURT.from;
+    // Reaction scaled to the blow: a flinch, a head snap, or knocked right off balance.
+    const severity = reduced / Math.max(1, this.stats.maxHp);
+    if (this.state === 'free' || this.state === 'drink') {
+      this.hurtMove = severity > 0.16 ? HURT_BIG : severity > 0.07 ? HURT_HEAD : HURT;
+      this.hurtDur = (this.hurtMove.to - this.hurtMove.from) * (this.hurtMove === HURT_BIG ? 0.8 : 1);
+      this.hurtT = this.hurtDur;
+    }
+    this.squash = Math.max(this.squash, 0.5 + Math.min(0.5, severity * 3));
+    this.recoil = -0.3 - Math.min(0.5, severity * 4);
     this.game.audio.play('hurt');
-    this.game.camRig.shake(0.25, 0.15);
+    this.game.camRig.shake(0.25 + Math.min(0.5, severity * 3), 0.15);
     this.game.hud.damageFlash();
+    this.game.renderer.punch(0.35 + Math.min(0.5, severity * 3), 0xff3020);
     this.game.rumble(0.35, 120);
+    if (severity > 0.1) this.game.hitstop(0.05);
     if (this.settingsNumbers()) this.game.hud.floatText(this.pos, `-${reduced}`, 'dmg player', 0.8);
-    if (from && !this.guarded && (this.state === 'free' || this.state === 'drink')) {
-      this.tmp.subVectors(this.pos, from).setY(0).normalize().multiplyScalar(0.35);
-      this.game.level.move(this.pos, this.tmp.x, this.tmp.z, this.radius);
+    if (from) {
+      // Impact spray in the hit direction, and a shove that reads as a real knockback.
+      this.tmp.subVectors(this.pos, from).setY(0);
+      if (this.tmp.lengthSq() > 1e-4) this.tmp.normalize();
+      else this.tmp.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+      this.recoilSide = (Math.random() - 0.5) * 0.5;
+      this.game.vfx.impactDir(this.tmp2.set(this.pos.x - this.tmp.x * 0.4, this.pos.y + 1.1, this.pos.z - this.tmp.z * 0.4), this.tmp, COLORS.red, 8);
+      if (!this.guarded && (this.state === 'free' || this.state === 'drink')) {
+        const push = 0.35 + Math.min(0.5, severity * 4);
+        this.game.level.move(this.pos, this.tmp.x * push, this.tmp.z * push, this.radius);
+      }
     }
     if (this.hp <= 0) {
       this.hp = 0;
@@ -447,6 +483,11 @@ export class Player {
 
   private die() {
     this.setState('dead', DEATH, DEATH.to - DEATH.from);
+    this.squash = 1;
+    this.game.vfx.dustBurst(this.pos, 14, 1.1);
+    this.game.renderer.punch(0.8, 0xff2010);
+    this.game.camRig.shake(0.6, 0.5);
+    this.game.hitstop(0.12);
     this.whirlTime = 0;
     this.whirlAura?.stop();
     this.whirlAura = null;
@@ -581,9 +622,18 @@ export class Player {
         }
         if (!this.hitDone && k >= at) {
           this.hitDone = true;
+          this.squash = -0.45;
           this.doComboHit(c, this.combo === chain.length - 1);
+        } else if (!this.hitDone && k > at - 0.18) {
+          // Anticipation: the body coils just before the blow.
+          this.squash = Math.max(this.squash, 0.25);
         }
-        this.trail.active = k > at - 0.25 && k < at + 0.2;
+        // Follow-through: every swing carries the body a little further forward, so attacks commit.
+        if (this.hitDone && k < at + 0.3) {
+          const push = 1.6 * dt * (1 - (k - at) / 0.3);
+          this.game.level.move(this.pos, Math.sin(this.yaw) * push, Math.cos(this.yaw) * push, this.radius);
+        }
+        this.trail.active = k > at - 0.3 && k < at + 0.26;
         if (input.attackHeld && k > 0.4) this.queued = true;
         if (canAct && input.heavyHeld) { this.startCharge(true); break; }
         if (canAct && this.tryCast()) break;
@@ -642,7 +692,8 @@ export class Player {
           else if (this.heavyStance === 'pillar') this.doPillarCrash();
           else this.doThrustLunge();
         }
-        if (k >= 1) { this.trail.active = false; this.setState('free'); }
+        // Only the thrust heavy leaves the ground, so only it lands.
+        if (k >= 1) { this.trail.active = false; if (this.heavyStance === 'thrust') this.landTimer = 0.02; this.setState('free'); }
         this.speedNow = 0;
         break;
       }
@@ -664,7 +715,7 @@ export class Player {
             this.game.addHazard(this.pos.clone(), 1.4, 2.5, this.rollDamage(0.35, true).amount, 'player');
           }
         }
-        if (k >= 1) this.setState('free');
+        if (k >= 1) { this.landTimer = 0.02; this.setState('free'); }
         break;
       }
       case 'drink': {
@@ -736,6 +787,10 @@ export class Player {
           this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 1, this.pos.z, { count: 60, speed: [4, 12], up: [2, 9], life: [0.4, 1], color: COLORS.goldHot, color2: COLORS.fire });
           this.game.strike({ origin: this.pos, yaw: 0, range: 7, halfArc: Math.PI, mult: 2.5, knock: 4, skill: true, color: COLORS.gold, stagger: true });
           this.game.camRig.shake(0.7, 0.5);
+          this.game.renderer.punch(0.8, COLORS.goldHot);
+          this.game.vfx.burst(this.tmp.set(this.pos.x, this.pos.y + 1.4, this.pos.z), 7, 0xffe0a0);
+          this.game.vfx.embers(this.pos, 3, 6);
+          this.squash = -0.8;
           this.game.rumble(0.8, 300);
         }
         if (k >= 1) this.setState('free');
@@ -957,6 +1012,7 @@ export class Player {
     else this.dodgeDir.set(Math.sin(this.yaw), Math.cos(this.yaw));
     this.yaw = yawOf(this.dodgeDir.x, this.dodgeDir.y);
     this.game.vfx.dustBurst(this.pos, 8, 0.5);
+    this.squash = -0.5;
     this.game.audio.play('dodge');
     this.combo = 0;
     return true;
@@ -1193,8 +1249,11 @@ export class Player {
     if (L + spent >= 3) this.game.vfx.beam(end, col, 10, 0.7, 1.4);
     this.game.strike({ origin: this.pos, yaw: this.yaw, range: len, halfArc: Math.PI, line: 1.4 + L * 0.2, mult, knock: 2 + L, skill: false, color: COLORS.goldHot, burn: this.transformed, stagger: true, poise: 50 + L * 35 + spent * 25 });
     this.windGales(L);
+    this.game.vfx.crackPix(end, 2.4 + L * 0.7, 1 + Math.min(2, L));
     this.game.audio.play(L + spent >= 2 ? 'slam' : 'heavyHit');
     this.game.camRig.shake(0.45 + L * 0.15, 0.3);
+    this.game.renderer.punch(0.3 + L * 0.12, 0x9ad8ff);
+    this.squash = 0.9;
     this.game.hitstop(0.07 + L * 0.03);
     this.game.rumble(0.45 + L * 0.2, 160 + L * 60);
   }
@@ -1220,6 +1279,8 @@ export class Player {
     this.windGales(L);
     this.game.audio.play(L + spent >= 2 ? 'slam' : 'heavyHit');
     this.game.camRig.shake(0.3 + L * 0.12, 0.25);
+    this.game.renderer.punch(0.22 + L * 0.1, 0xb0ffa0);
+    this.squash = -0.5;
     this.game.hitstop(0.06 + L * 0.03);
     this.game.rumble(0.35 + L * 0.2, 140 + L * 50);
   }
@@ -1240,8 +1301,11 @@ export class Player {
     this.game.debris.burst(at, 0x5e5a52, 6 + L * 3, 0.16, 1 + L * 0.2);
     if (L + spent >= 3) this.game.vfx.beam(at, COLORS.gold, 10, 0.7, 1.6);
     this.game.strike({ origin: at, yaw: 0, range: r, halfArc: Math.PI, mult, knock: 2.5 + L, skill: false, color: COLORS.goldHot, burn: this.transformed, stagger: L > 0 || spent > 0, poise: 30 + L * 30 + spent * 25 });
+    this.game.vfx.crackPix(at, 2.6 + L * 0.8, 1 + Math.min(2, L));
     this.game.audio.play(L + spent >= 2 ? 'slam' : 'heavyHit');
     this.game.camRig.shake(0.4 + L * 0.15 + spent * 0.1, 0.3);
+    this.game.renderer.punch(0.3 + L * 0.12, COLORS.goldHot);
+    this.squash = 0.9;
     this.game.hitstop(0.06 + L * 0.03);
     this.game.rumble(0.4 + L * 0.2, 150 + L * 60);
     if (L + spent >= 2) this.game.vfx.twinkle(at, r * 0.6, 6);
@@ -1266,8 +1330,11 @@ export class Player {
     this.game.vfx.sparks.emit(this.pos.x, this.pos.y + 0.3, this.pos.z, { count: 30, radius: 1.5, speed: [3, 8], up: [3, 8], life: [0.3, 0.7], color: COLORS.goldHot, color2: COLORS.gold });
     this.game.debris.burst(this.pos, 0x5e5a52, 10, 0.18, 1.2);
     this.game.strike({ origin: this.pos, yaw: 0, range: r, halfArc: Math.PI, mult: 2.4 * scale, knock: 3, skill: true, color: COLORS.goldHot, burn: this.transformed, stagger: true });
+    this.game.vfx.crackPix(this.pos, 4 * scale, 2);
     this.game.audio.play('slam');
     this.game.camRig.shake(0.6, 0.35);
+    this.game.renderer.punch(0.4, COLORS.goldHot);
+    this.squash = 1;
     this.game.hitstop(0.08);
     this.game.rumble(0.7, 200);
   }
@@ -1356,7 +1423,7 @@ export class Player {
           this.poseMove(SPECIAL_MOVES.sweep, hitAt(SPECIAL_MOVES.sweep), 0.1);
           spin = this.game.time * 22;
         } else if (this.hurtT > 0) {
-          this.poseMove(HURT, 1 - this.hurtT / (HURT.to - HURT.from), 0.05);
+          this.poseMove(this.hurtMove, 1 - this.hurtT / this.hurtDur, 0.05);
         } else if (a.playing) {
           a.release(0.18);
         }
@@ -1365,17 +1432,61 @@ export class Player {
         if (this.move) this.poseMove(this.move, k, this.state === 'dodge' ? 0.05 : 0.08);
     }
     r.model.rotation.y = spin;
+
+    // ---- Procedural overlay: breathing, banking into turns, recoil, squash & stretch ----
+    const tNow = this.game.time;
+    const spK = clamp(this.speedNow / 6.4, 0, 1.2);
+    // Turn rate, smoothed, drives a bank so changes of direction don't snap.
+    const dYaw = wrapAngle(this.yaw - this.lastYaw);
+    this.lastYaw = this.yaw;
+    this.turnRate = lerp(this.turnRate, dt > 0 ? clamp(dYaw / dt, -6, 6) : 0, damp(8, dt));
+    this.recoil = lerp(this.recoil, 0, damp(9, dt));
+    this.recoilSide = lerp(this.recoilSide, 0, damp(9, dt));
+    const idle = this.state === 'free' && this.speedNow < 0.2;
+    // Idle breathing, plus a slow weight shift from foot to foot so standing still is never frozen.
+    this.idleSway = lerp(this.idleSway, idle ? 1 : 0, damp(4, dt));
+    const breathe = Math.sin(tNow * 1.5) * 0.022 * this.idleSway;
+    const lunging = this.state === 'heavy' || this.state === 'dodge' || this.state === 'slam';
+    a.bias.breathe = breathe;
+    a.bias.lean = this.recoil + spK * 0.09 + (lunging ? 0.06 : 0);
+    a.bias.side = this.recoilSide - this.turnRate * 0.035 * (0.3 + spK);
+    a.bias.twist = Math.sin(tNow * 0.9) * 0.02 * this.idleSway - this.turnRate * 0.02;
+    r.model.position.x = Math.sin(tNow * 0.8) * 0.012 * this.idleSway;
+
     a.update(dt, this.state === 'free' || this.state === 'drink' ? this.speedNow : 0);
+
+    // Squash & stretch: impacts flatten the body, lunges stretch it, both spring back.
+    this.squash = lerp(this.squash, 0, damp(11, dt));
+    const sq = this.squash;
+    const sc = this.transformed ? 1 : 1; // the root carries the transform scale
+    r.model.scale.set(sc * (1 + 0.14 * sq), sc * (1 - 0.2 * sq), sc * (1 + 0.14 * sq));
+
+    // Landing: a move that left the ground thumps down with dust and a squash.
+    if (this.landTimer > 0) {
+      this.landTimer -= dt;
+      if (this.landTimer <= 0) {
+        this.squash = Math.max(this.squash, 0.8);
+        this.game.vfx.dust.emit(this.pos.x, this.pos.y + 0.1, this.pos.z, { count: 6, radius: 0.5, speed: [1, 2.5], up: [0.3, 1], life: [0.3, 0.7], size: [0.25, 0.5], color: 0x6c6458, color2: 0x8f877a, gravity: 1, drag: 3 });
+        this.game.audio.play('stepStone');
+        this.game.camRig.shake(0.12, 0.1);
+      }
+    }
+
     // Footsteps: two per locomotion cycle, wet in water and hard on stone, ice, bone and paving.
     const half = Math.floor(a.stridePhase * 2);
     if (this.speedNow > 1.2 && half !== this.lastStep && this.state === 'free') {
       this.game.audio.play(this.game.level.inWater(this.pos.x, this.pos.z) ? 'stepWater' : HARD_FLOORS.has(this.game.level.floorAt(this.pos.x, this.pos.z) ?? '') ? 'stepStone' : 'stepGrass');
+      // A small scuff of dust under the planted foot sells the weight of the stride. Deliberately
+      // tiny: a full dust burst here would fog the hero every other step.
+      if (this.speedNow > 4.2) {
+        this.game.vfx.dust.emit(this.pos.x, this.pos.y + 0.08, this.pos.z, { count: 2, radius: 0.25, speed: [0.3, 1], up: [0.2, 0.7], life: [0.25, 0.45], size: [0.14, 0.26], color: 0x7a7266, color2: 0x9a9286, gravity: 1.5, drag: 4 });
+      }
     }
     this.lastStep = half;
 
     // Secondary motion: tail, sash tails and plumes trail behind movement.
     const t = this.game.time;
-    const speedK = clamp(this.speedNow / 6.4, 0, 1.3);
+    const speedK = spK;
     r.tail.rotation.y = Math.sin(t * 3) * 0.3;
     r.tail.rotation.x = Math.sin(t * 2.1) * 0.15 - speedK * 0.3;
     for (let i = 0; i < r.sashes.length; i++) {
