@@ -171,7 +171,7 @@ export class Player {
     this.root = this.rig.root;
     this.anim = new Animator(this.rig.root, {
       idle: 'idle',
-      moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }, { name: 'sprint', speed: 6.2 }],
+      moves: [{ name: 'walk', speed: 1.5 }, { name: 'jog', speed: 3.6 }],
       breaks: ['lookAround', 'foldArms'],
     });
     this.pos = this.root.position;
@@ -1448,9 +1448,12 @@ export class Player {
     const breathe = Math.sin(tNow * 1.5) * 0.022 * this.idleSway;
     const lunging = this.state === 'heavy' || this.state === 'dodge' || this.state === 'slam';
     a.bias.breathe = breathe;
-    a.bias.lean = this.recoil + spK * 0.09 + (lunging ? 0.06 : 0);
-    a.bias.side = this.recoilSide - this.turnRate * 0.035 * (0.3 + spK);
-    a.bias.twist = Math.sin(tNow * 0.9) * 0.02 * this.idleSway - this.turnRate * 0.02;
+    // The locomotion clips already carry their own forward lean and counter-rotation, so running adds
+    // none here: stacking a speed lean and a turn bank on top bent the torso into a crouch and twisted
+    // the chest sideways. Only breathing, the idle sway and hit recoil are layered on (all small).
+    a.bias.lean = clamp(this.recoil, -0.35, 0.35) + (lunging ? 0.03 : 0);
+    a.bias.side = clamp(this.recoilSide, -0.2, 0.2);
+    a.bias.twist = Math.sin(tNow * 0.9) * 0.02 * this.idleSway;
     r.model.position.x = Math.sin(tNow * 0.8) * 0.012 * this.idleSway;
 
     a.update(dt, this.state === 'free' || this.state === 'drink' ? this.speedNow : 0);
